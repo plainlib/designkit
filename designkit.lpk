@@ -9,7 +9,9 @@
       <Version Value="11"/>
       <PathDelim Value="\"/>
       <SearchPaths>
-        <UnitOutputDirectory Value="lib\$(TargetCPU)-$(TargetOS)\"/>
+        <IncludeFiles Value="src"/>
+        <OtherUnitFiles Value="src"/>
+        <UnitOutputDirectory Value="lib\$(TargetCPU)-$(TargetOS)"/>
       </SearchPaths>
     </CompilerOptions>
     <Description Value="A collection of visual and non-visual components to streamline form design in Lazarus"/>
@@ -35,9 +37,24 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE."/>
     <Version Major="1"/>
+    <Files>
+      <Item>
+        <Filename Value="src\formgrip.pas"/>
+        <UnitName Value="FormGrip"/>
+      </Item>
+      <Item>
+        <Filename Value="src\designkitregister.pas"/>
+        <HasRegisterProc Value="True"/>
+        <UnitName Value="DesignKitRegister"/>
+      </Item>
+      <Item>
+        <Filename Value="src\designkit.lrs"/>
+        <Type Value="LRS"/>
+      </Item>
+    </Files>
     <RequiredPkgs>
       <Item>
-        <PackageName Value="FCL"/>
+        <PackageName Value="LCL"/>
       </Item>
     </RequiredPkgs>
     <UsageOptions>

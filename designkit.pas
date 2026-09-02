@@ -8,12 +8,13 @@ unit designkit;
 interface
 
 uses
-  LazarusPackageIntf;
+  FormGrip, DesignKitRegister, LazarusPackageIntf;
 
 implementation
 
 procedure Register;
 begin
+  RegisterUnit('DesignKitRegister', @DesignKitRegister.Register);
 end;
 
 initialization
