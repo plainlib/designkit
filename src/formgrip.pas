@@ -46,6 +46,7 @@ type
     FStartWidth: integer;
     FStartHeight: integer;
     FPrevCursor: TCursor;
+    FPrevComposited: boolean;
 
     procedure SetEnabled(Value: boolean);
     procedure SetActive(Value: boolean);
@@ -92,6 +93,8 @@ type
 
 implementation
 
+uses controlshelper;
+
 constructor TFormGrip.Create(AOwner: TComponent);
 begin
   inherited Create(AOwner);
@@ -108,6 +111,7 @@ begin
   FMinFormHeight := 100;
   FDragging := False;
   FPrevCursor := crDefault;
+  FPrevComposited := False;
 end;
 
 destructor TFormGrip.Destroy;
@@ -392,6 +396,9 @@ begin
     FStartPoint := Point(X, Y);
     FStartWidth := FForm.Width;
     FStartHeight := FForm.Height;
+    // Save and enable double buffering to reduce flicker
+    FPrevComposited := FForm.Composited;
+    FForm.Composited := True;
     SetCapture(FForm.Handle);
   end;
   // Call original handler if assigned
@@ -421,8 +428,8 @@ begin
         NewWidth := FMinFormWidth;
       if NewHeight < FMinFormHeight then
         NewHeight := FMinFormHeight;
-      FForm.Width := NewWidth;
-      FForm.Height := NewHeight;
+      // Use SetBounds for atomic size change, reduces flicker
+      FForm.SetBounds(FForm.Left, FForm.Top, NewWidth, NewHeight);
     end
     else if IsInGripArea(X, Y) then
     begin
@@ -455,6 +462,8 @@ begin
   if FDragging then
   begin
     FDragging := False;
+    // Restore previous double buffering state
+    FForm.Composited := FPrevComposited;
     ReleaseCapture;
   end;
   // Call original handler if assigned

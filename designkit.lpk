@@ -54,6 +54,9 @@ SOFTWARE."/>
     </Files>
     <RequiredPkgs>
       <Item>
+        <PackageName Value="helpers"/>
+      </Item>
+      <Item>
         <PackageName Value="LCL"/>
       </Item>
     </RequiredPkgs>
