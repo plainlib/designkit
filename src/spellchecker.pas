@@ -42,6 +42,12 @@ type
     FOnSpellCheckComplete: TSpellCheckCompleteEvent;
     FOnContextPopup: TSpellContextPopupEvent; // optional user hook
 
+    // Integration with external PopupMenu
+    FPopupMenu: TPopupMenu;
+    FSubMenu: Boolean;
+    FSubMenuCaption: string;
+    FSubMenuIndex: Integer;
+
     FSpellChecker: TRichSpellChecker;
     FCheckThread: TThread;
     FChecking: boolean;
@@ -62,6 +68,10 @@ type
     procedure SetCheckDelay(AValue: integer);
     procedure SetOptions(AValue: TSpellCheckOptions);
     procedure SetAutoContextMenu(AValue: boolean);
+    procedure SetPopupMenu(AValue: TPopupMenu);
+    procedure SetUseSubMenu(AValue: Boolean);
+    procedure SetSuggestionsCaption(const AValue: string);
+    procedure SetSubMenuIndex(AValue: Integer);
     procedure UpdateContextMenuHandler;
     procedure OnRichMemoChange(Sender: TObject);
     procedure OnRichMemoContextPopup(Sender: TObject; MousePos: TPoint; var Handled: Boolean);
@@ -107,6 +117,16 @@ type
     // Automatically attach to RichMemo.OnContextPopup to show suggestion menu.
     // When enabled, the component handles context menu and falls back to RichMemo.PopupMenu.
     property AutoContextMenu: boolean read FAutoContextMenu write SetAutoContextMenu default True;
+
+    // External PopupMenu to integrate suggestions into (if nil, use default behavior)
+    property PopupMenu: TPopupMenu read FPopupMenu write SetPopupMenu;
+    // If True, suggestions are placed in a submenu with caption SuggestionsCaption
+    property SubMenu: Boolean read FSubMenu write SetUseSubMenu default False;
+    // Caption of the submenu when UseSubMenu is True
+    property SubMenuCaption: string read FSubMenuCaption write SetSuggestionsCaption;
+    // Index where suggestions (or submenu) will be inserted in the PopupMenu
+    property SubMenuIndex: Integer read FSubMenuIndex write SetSubMenuIndex default 0;
+
     // Called after a check has finished and (if AutoApply) errors are applied
     property OnSpellCheckComplete: TSpellCheckCompleteEvent read FOnSpellCheckComplete write FOnSpellCheckComplete;
     // Called when context menu is about to be shown (before our automatic handler).
@@ -139,6 +159,12 @@ begin
   FPrevOnChange := nil;
   FContextMenuOpen := False;
   FReplaceJustDone := False;
+
+  // Default integration settings
+  FPopupMenu := nil;
+  FSubMenu := False;
+  FSubMenuCaption := 'Suggestions';
+  FSubMenuIndex := 0;
 end;
 
 destructor TSpellChecker.Destroy;
@@ -196,6 +222,12 @@ begin
     FRichMemo := nil;
     if Assigned(FDebounceTimer) then
       FDebounceTimer.Enabled := False;
+  end
+  else if (Operation = opRemove) and (AComponent = FPopupMenu) then
+  begin
+    FPopupMenu := nil;
+    if Assigned(FSpellChecker) then
+      FSpellChecker.PopupMenu := nil; // detach from internal checker
   end;
 end;
 
@@ -227,6 +259,12 @@ begin
 
     FSpellChecker := TRichSpellChecker.Create(FRichMemo);
     FSpellChecker.OnSpellCheckNeeded := @DoSpellCheckNeeded;
+
+    // Apply current integration settings to the new internal checker
+    FSpellChecker.PopupMenu := FPopupMenu;
+    FSpellChecker.SubMenu := FSubMenu;
+    FSpellChecker.SubMenuCaption := FSubMenuCaption;
+    FSpellChecker.SubMenuIndex := FSubMenuIndex;
 
     ClearUnderlines;
   end;
@@ -314,6 +352,46 @@ begin
   begin
     FAutoContextMenu := AValue;
     UpdateContextMenuHandler;
+  end;
+end;
+
+procedure TSpellChecker.SetPopupMenu(AValue: TPopupMenu);
+begin
+  if FPopupMenu <> AValue then
+  begin
+    FPopupMenu := AValue;
+    if Assigned(FSpellChecker) then
+      FSpellChecker.PopupMenu := AValue;
+  end;
+end;
+
+procedure TSpellChecker.SetUseSubMenu(AValue: Boolean);
+begin
+  if FSubMenu <> AValue then
+  begin
+    FSubMenu := AValue;
+    if Assigned(FSpellChecker) then
+      FSpellChecker.SubMenu := AValue;
+  end;
+end;
+
+procedure TSpellChecker.SetSuggestionsCaption(const AValue: string);
+begin
+  if FSubMenuCaption <> AValue then
+  begin
+    FSubMenuCaption := AValue;
+    if Assigned(FSpellChecker) then
+      FSpellChecker.SubMenuCaption := AValue;
+  end;
+end;
+
+procedure TSpellChecker.SetSubMenuIndex(AValue: Integer);
+begin
+  if FSubMenuIndex <> AValue then
+  begin
+    FSubMenuIndex := AValue;
+    if Assigned(FSpellChecker) then
+      FSpellChecker.SubMenuIndex := AValue;
   end;
 end;
 
