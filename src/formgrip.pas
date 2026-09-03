@@ -112,6 +112,9 @@ begin
   FDragging := False;
   FPrevCursor := crDefault;
   FPrevComposited := False;
+
+  if (Owner is TForm) and not (csLoading in Owner.ComponentState) then
+    HookForm;
 end;
 
 destructor TFormGrip.Destroy;
@@ -337,16 +340,19 @@ begin
     end;
 
     gsLines:
-    begin
-      // Draw several diagonal lines
-      Canvas.Pen.Width := 1;
-      for i := 0 to 3 do
-      begin
-        x := i * 3;
-        Canvas.Line(Right - x, Bottom,
-          Right, Bottom - x);
-      end;
-    end;
+        begin
+          // Draw several diagonal lines within the grip area
+          Canvas.Pen.Width := 1;
+          Count := (GripSize div 3) + 1;
+          for i := 0 to Count - 1 do
+          begin
+            x := i * 3;
+            if x > GripSize then
+              Break;
+            Canvas.Line(Right - x, Bottom,
+              Right, Bottom - x);
+          end;
+        end;
 
     gsGrid:
     begin
@@ -364,8 +370,7 @@ begin
     begin
       // Draw solid triangle
       Canvas.Pen.Style := psClear;
-      Canvas.Polygon([Point(Right, Bottom - FGripSize), Point(Right, Bottom),
-        Point(Right - FGripSize, Bottom)]);
+      Canvas.Polygon([Point(Right, Bottom - FGripSize), Point(Right, Bottom), Point(Right - FGripSize, Bottom)]);
       Canvas.Pen.Style := psSolid;
     end;
   end;
