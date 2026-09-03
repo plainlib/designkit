@@ -8,7 +8,7 @@ unit designkit;
 interface
 
 uses
-  FormGrip, DesignKitRegister, LazarusPackageIntf;
+  DesignKitRegister, FormGrip, FlatButton, LazarusPackageIntf;
 
 implementation
 

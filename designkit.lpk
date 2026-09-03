@@ -39,10 +39,6 @@ SOFTWARE."/>
     <Version Major="1"/>
     <Files>
       <Item>
-        <Filename Value="src\formgrip.pas"/>
-        <UnitName Value="FormGrip"/>
-      </Item>
-      <Item>
         <Filename Value="src\designkitregister.pas"/>
         <HasRegisterProc Value="True"/>
         <UnitName Value="DesignKitRegister"/>
@@ -51,8 +47,22 @@ SOFTWARE."/>
         <Filename Value="src\designkit.lrs"/>
         <Type Value="LRS"/>
       </Item>
+      <Item>
+        <Filename Value="src\formgrip.pas"/>
+        <UnitName Value="FormGrip"/>
+      </Item>
+      <Item>
+        <Filename Value="src\flatbutton.pas"/>
+        <UnitName Value="FlatButton"/>
+      </Item>
     </Files>
     <RequiredPkgs>
+      <Item>
+        <PackageName Value="IDEIntf"/>
+      </Item>
+      <Item>
+        <PackageName Value="toolkit"/>
+      </Item>
       <Item>
         <PackageName Value="helpers"/>
       </Item>
