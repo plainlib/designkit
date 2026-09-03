@@ -22,9 +22,8 @@ type
     FTooltipColor: TColor;                  // Tooltip background color
     FTooltipDuration: integer;              // Tooltip auto-hide duration (ms, 0 = no auto-hide)
     FTooltipTimer: TTimer;                  // Timer for delayed tooltip
-    FTooltipActive: boolean;
-    FTooltipInstance: TOneShotTooltip;
-    FWasTooltipActiveOnMouseDown: boolean;  // remembers if tooltip was active/scheduled when mouse pressed
+    FTooltipActive: boolean;                // Is tooltip currently visible or scheduled
+    FTooltipInstance: TOneShotTooltip;      // Active tooltip instance
     procedure SetOffsetY(AValue: integer);
     procedure SetDrawPressed(AValue: boolean);
     procedure SetTooltip(const AValue: TCaption);
@@ -43,7 +42,6 @@ type
   public
     constructor Create(AOwner: TComponent); override;
     destructor Destroy; override;
-    procedure Click; override;
   published
     // Hide the inherited Flat property by making it read-only and always True
     property Flat: boolean read FFlat default True;
@@ -65,7 +63,7 @@ implementation
 constructor TFlatButton.Create(AOwner: TComponent);
 begin
   inherited Create(AOwner);
-  FFlat := True;                            // Always flat
+  FFlat := True;
   FOffsetY := 0;
   FDrawPressed := True;
   FIsPressed := False;
@@ -80,8 +78,7 @@ begin
   FTooltipTimer.OnTimer := @TooltipTimerHandler;
   FTooltipActive := False;
   FTooltipInstance := nil;
-  FWasTooltipActiveOnMouseDown := False;
-  inherited Flat := True;                   // Ensure inherited property stays True
+  inherited Flat := True;
 end;
 
 destructor TFlatButton.Destroy;
@@ -93,8 +90,8 @@ begin
   FTooltipInstance := nil;
   if Assigned(OldTip) then
   begin
-    OldTip.OnHide := nil;   // disconnects handler to avoid callbacks on destroyed button
-    OldTip.Hide;            // hides and schedules auto-free if AutoFree is True
+    OldTip.OnHide := nil;   // disconnect handler to avoid callbacks on destroyed button
+    OldTip.Hide;            // hide and auto-free if needed
   end;
   inherited Destroy;
 end;
@@ -163,7 +160,7 @@ var
 begin
   if FTooltip = '' then Exit;
 
-  // Hide the previous hint if it is still active
+  // Hide previous tooltip if any
   if Assigned(FTooltipInstance) then
     FTooltipInstance.Hide;
 
@@ -176,9 +173,10 @@ begin
   NewTip.OnHide := @TooltipHidden;
   FTooltipInstance := NewTip;
   FTooltipActive := True;
-  Invalidate; // updating the button appearance (pressed)
+  Invalidate; // update button appearance (pressed)
 
-  NewTip.ShowHintText(FTooltip, tipX, tipY, FTooltipWidth, FTooltipHeight, FTooltipDuration, FTooltipColor);
+  // Pass Self as owner control so the hint knows not to hide when clicked
+  NewTip.ShowHintText(FTooltip, tipX, tipY, FTooltipWidth, FTooltipHeight, FTooltipDuration, FTooltipColor, Self);
 end;
 
 procedure TFlatButton.TooltipHidden(Sender: TObject);
@@ -188,21 +186,8 @@ begin
   Invalidate;
 end;
 
-procedure TFlatButton.Click;
-begin
-  inherited Click;
-  // Tooltip logic is handled in MouseUp to correctly manage repeated clicks
-end;
-
 procedure TFlatButton.MouseDown(Button: TMouseButton; Shift: TShiftState; X, Y: integer);
 begin
-  // Remember if tooltip was active or a delayed show was pending before processing the click
-  FWasTooltipActiveOnMouseDown := FTooltipActive or FTooltipTimer.Enabled;
-
-  // If a delayed show was pending, cancel it to avoid it appearing after this click
-  if FTooltipTimer.Enabled then
-    FTooltipTimer.Enabled := False;
-
   inherited MouseDown(Button, Shift, X, Y);
 
   if (Button = mbLeft) and FDrawPressed then
@@ -218,41 +203,32 @@ begin
 
   if Button <> mbLeft then Exit;
 
-  // If a tooltip was active or scheduled when the mouse was pressed,
-  // just close/cancel it and do not show a new one
-  if FWasTooltipActiveOnMouseDown then
-  begin
-    // If the tooltip is still visible (it may have already closed due to focus loss), hide it
-    if FTooltipActive and Assigned(FTooltipInstance) then
-      FTooltipInstance.Hide; // triggers TooltipHidden and resets flags
-    // Otherwise do nothing, the auto-hide already happened
-  end
-  else
-  begin
-    // No tooltip was active, so show it (with delay if configured)
-    if FTooltip = '' then Exit;
-
-    // Cancel any (unlikely) pending timer just in case
-    FTooltipTimer.Enabled := False;
-
-    if FTooltipDelay > 0 then
-    begin
-      FTooltipTimer.Interval := FTooltipDelay;
-      FTooltipTimer.Enabled := True;
-    end
-    else
-      ShowTooltip;
-  end;
-
-  // Reset the flag for the next mouse interaction
-  FWasTooltipActiveOnMouseDown := False;
-
-  // Standard pressed state handling (may be redundant if done in MouseDown/Up)
-  if (Button = mbLeft) and FDrawPressed then
+  if FDrawPressed then
   begin
     FIsPressed := False;
     Invalidate;
   end;
+
+  // If tooltip is active (visible or scheduled), just hide it and do not show again
+  if FTooltipActive then
+  begin
+    if Assigned(FTooltipInstance) then
+      FTooltipInstance.Hide;  // triggers TooltipHidden and resets flags
+    Exit;
+  end;
+
+  // No tooltip active, so show it (with delay if configured)
+  if FTooltip = '' then Exit;
+
+  FTooltipTimer.Enabled := False;
+
+  if FTooltipDelay > 0 then
+  begin
+    FTooltipTimer.Interval := FTooltipDelay;
+    FTooltipTimer.Enabled := True;
+  end
+  else
+    ShowTooltip;
 end;
 
 procedure TFlatButton.Paint;
@@ -274,7 +250,6 @@ begin
   else
     Details := ThemeServices.GetElementDetails(ttbButtonNormal);
 
-  // Draw the themed background
   ThemeServices.DrawElement(Canvas.Handle, Details, ClientRect);
 
   // Determine icon dimensions from ImageList or Glyph
@@ -304,16 +279,13 @@ begin
 
   // Horizontal alignment of the whole icon+text block
   case Alignment of
-    taRightJustify:
-      xStart := ClientWidth - totalWidth - gap;
+    taRightJustify: xStart := ClientWidth - totalWidth - gap;
     taCenter:
     begin
       xStart := (ClientWidth - totalWidth) div 2;
-      if xStart < gap then
-        xStart := gap;
+      if xStart < gap then xStart := gap;
     end;
-    else // taLeftJustify
-      xStart := gap;
+    else xStart := gap;
   end;
 
   // Draw the icon vertically centered
@@ -332,17 +304,14 @@ begin
 
   // Caption rectangle shifted vertically by OffsetY
   case Alignment of
-    taRightJustify:
-      r := Rect(xText, FOffsetY, ClientWidth - gap, ClientHeight + FOffsetY);
-    taCenter:
-      r := Rect(xText, FOffsetY, ClientWidth - xStart, ClientHeight + FOffsetY);
-    else // taLeftJustify
-      r := Rect(xText, FOffsetY, ClientWidth - gap, ClientHeight + FOffsetY);
+    taRightJustify: r := Rect(xText, FOffsetY, ClientWidth - gap, ClientHeight + FOffsetY);
+    taCenter: r := Rect(xText, FOffsetY, ClientWidth - xStart, ClientHeight + FOffsetY);
+    else r := Rect(xText, FOffsetY, ClientWidth - gap, ClientHeight + FOffsetY);
   end;
 
   // Draw caption centered vertically inside the shifted rectangle
   ts := Canvas.TextStyle;
-  ts.Alignment := taLeftJustify; // text always left-aligned inside its rect
+  ts.Alignment := taLeftJustify;
   ts.Layout := tlCenter;
   Canvas.TextRect(r, r.Left, r.Top, Caption, ts);
 end;
