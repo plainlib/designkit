@@ -11,7 +11,7 @@ unit DesignKitRegister;
 interface
 
 uses
-  Controls, Classes, LResources, PropEdits, GraphPropEdits, FormGrip, FlatButton;
+  Controls, Classes, LResources, PropEdits, GraphPropEdits, FormGrip, FlatButton, SpellChecker;
 
 procedure Register;
 
@@ -33,6 +33,7 @@ begin
   RegisterComponents('Common Controls', [TFormGrip]);
   RegisterComponents('Common Controls', [TFlatButton]);
   RegisterPropertyEditor(TypeInfo(TCaption), TFlatButton, 'Tooltip', TFlatButtonTooltipPropertyEditor);
+  RegisterComponents('Common Controls', [TSpellChecker]);
 end;
 
 initialization

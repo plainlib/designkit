@@ -55,8 +55,18 @@ SOFTWARE."/>
         <Filename Value="src\flatbutton.pas"/>
         <UnitName Value="FlatButton"/>
       </Item>
+      <Item>
+        <Filename Value="src\spellchecker.pas"/>
+        <UnitName Value="SpellChecker"/>
+      </Item>
     </Files>
     <RequiredPkgs>
+      <Item>
+        <PackageName Value="richkit"/>
+      </Item>
+      <Item>
+        <PackageName Value="richmemopackage"/>
+      </Item>
       <Item>
         <PackageName Value="IDEIntf"/>
       </Item>
