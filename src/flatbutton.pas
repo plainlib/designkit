@@ -54,7 +54,7 @@ type
     property TooltipDelay: integer read FTooltipDelay write SetTooltipDelay default 0;
     property TooltipWidth: integer read FTooltipWidth write SetTooltipWidth default 0;
     property TooltipHeight: integer read FTooltipHeight write SetTooltipHeight default 0;
-    property TooltipColor: TColor read FTooltipColor write SetTooltipColor default clInfoBk;
+    property TooltipColor: TColor read FTooltipColor write SetTooltipColor default clDefault;
     property TooltipDuration: integer read FTooltipDuration write SetTooltipDuration default 0;
   end;
 
@@ -71,7 +71,7 @@ begin
   FTooltipDelay := 0;
   FTooltipWidth := 0;
   FTooltipHeight := 0;
-  FTooltipColor := clInfoBk;
+  FTooltipColor := clDefault;
   FTooltipDuration := 0;
   FTooltipTimer := TTimer.Create(Self);
   FTooltipTimer.Enabled := False;
@@ -285,7 +285,8 @@ begin
       xStart := (ClientWidth - totalWidth) div 2;
       if xStart < gap then xStart := gap;
     end;
-    else xStart := gap;
+    else
+      xStart := gap;
   end;
 
   // Draw the icon vertically centered
@@ -306,7 +307,8 @@ begin
   case Alignment of
     taRightJustify: r := Rect(xText, FOffsetY, ClientWidth - gap, ClientHeight + FOffsetY);
     taCenter: r := Rect(xText, FOffsetY, ClientWidth - xStart, ClientHeight + FOffsetY);
-    else r := Rect(xText, FOffsetY, ClientWidth - gap, ClientHeight + FOffsetY);
+    else
+      r := Rect(xText, FOffsetY, ClientWidth - gap, ClientHeight + FOffsetY);
   end;
 
   // Draw caption centered vertically inside the shifted rectangle
