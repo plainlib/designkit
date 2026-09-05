@@ -3,8 +3,8 @@
 //  Licensed under the MIT License
 //  You may obtain a copy of the License at https://opensource.org/licenses/MIT
 //-----------------------------------------------------------------------------------
-//  Non-visual component for spell checking a TRichMemo using Windows Spell Checker.
-//  Handles background checking, debounced real-time updates, cancellation,
+//  Non-visual component for spell checking a TRichMemo using Windows Spell Checker
+//  or HunSpell. Handles background checking, debounced real-time updates, cancellation,
 //  automatic context menu with suggestions, and re-check after replacement.
 //  Optimized to avoid redundant repaints during replacement.
 //-----------------------------------------------------------------------------------
@@ -17,6 +17,7 @@ interface
 
 uses
   Controls, Classes, SysUtils, ExtCtrls, Menus, RichMemo, RichSpellChecker, SpellUtils,
+  HunSpellChecker,
   {$IFDEF WINDOWS}
   WinSpellChecker,
   {$ENDIF}
@@ -28,11 +29,15 @@ type
   // Event fired when context menu is about to be shown (before our automatic handling)
   TSpellContextPopupEvent = procedure(Sender: TObject; MousePos: TPoint; var Handled: boolean) of object;
 
+  // Spell engine selection
+  TSpellEngine = (seWindows, seHunspell);
+
   TSpellChecker = class(TComponent)
   private
     FRichMemo: TRichMemo;
     FLanguage: string;
     FEnabled: boolean;
+    FDestroying: boolean;
     FOptions: TSpellCheckOptions;
     FAddEmptySuggestions: boolean;
     FRealTime: boolean;
@@ -41,12 +46,15 @@ type
     FAutoContextMenu: boolean;
     FOnSpellCheckComplete: TSpellCheckCompleteEvent;
     FOnContextPopup: TSpellContextPopupEvent; // optional user hook
+    FEngine: TSpellEngine;
+    FHunSpellChecker: THunSpellChecker;
+    FHunDictionaryLoaded: boolean; // True when a Hunspell dictionary has been loaded
 
     // Integration with external PopupMenu
     FPopupMenu: TPopupMenu;
-    FSubMenu: Boolean;
+    FSubMenu: boolean;
     FSubMenuCaption: string;
-    FSubMenuIndex: Integer;
+    FSubMenuIndex: integer;
 
     FSpellChecker: TRichSpellChecker;
     FCheckThread: TThread;
@@ -69,12 +77,13 @@ type
     procedure SetOptions(AValue: TSpellCheckOptions);
     procedure SetAutoContextMenu(AValue: boolean);
     procedure SetPopupMenu(AValue: TPopupMenu);
-    procedure SetUseSubMenu(AValue: Boolean);
+    procedure SetUseSubMenu(AValue: boolean);
     procedure SetSuggestionsCaption(const AValue: string);
-    procedure SetSubMenuIndex(AValue: Integer);
+    procedure SetSubMenuIndex(AValue: integer);
+    procedure SetEngine(AValue: TSpellEngine);
     procedure UpdateContextMenuHandler;
     procedure OnRichMemoChange(Sender: TObject);
-    procedure OnRichMemoContextPopup(Sender: TObject; MousePos: TPoint; var Handled: Boolean);
+    procedure OnRichMemoContextPopup(Sender: TObject; MousePos: TPoint; var Handled: boolean);
     procedure DoDebouncedCheck(Sender: TObject);
     procedure DoBackgroundCheck;
     procedure OnBackgroundDone;
@@ -97,14 +106,21 @@ type
     function IsChecking: boolean;
     // Manually show context menu with suggestions at given client coordinates
     function ShowContextMenu(X, Y: integer): boolean;
+    // Load Hunspell dictionary from files
+    procedure LoadHunDictionaryFromFiles(const AFFFileName, DICFileName: string);
+    // Load Hunspell dictionary from streams
+    procedure LoadHunDictionaryFromStream(AFFStream, DICStream: TStream);
+    // Unload Hunspell dictionary (clears checker and underlines if engine is Hunspell)
+    procedure UnloadHunDictionary;
   published
     // The RichMemo to be checked
     property RichMemo: TRichMemo read FRichMemo write SetRichMemo;
-    // BCP-47 language tag, e.g. 'en-US' or 'ru-RU'
+    // BCP-47 language tag, e.g. 'en-US' or 'ru-RU' (used only by Windows engine)
     property Language: string read FLanguage write SetLanguage;
     // Enable or disable spell checking
     property Enabled: boolean read FEnabled write SetEnabled default True;
-    // Which checks to perform (spelling, comprehensive spelling)
+    // Which checks to perform (spelling, comprehensive spelling). Windows engine supports both,
+    // Hunspell engine only supports scoSpelling (other options are ignored).
     property Options: TSpellCheckOptions read FOptions write SetOptions default [scoSpelling];
     // Include errors that have no suggestions
     property AddEmptySuggestions: boolean read FAddEmptySuggestions write FAddEmptySuggestions default True;
@@ -121,11 +137,14 @@ type
     // External PopupMenu to integrate suggestions into (if nil, use default behavior)
     property PopupMenu: TPopupMenu read FPopupMenu write SetPopupMenu;
     // If True, suggestions are placed in a submenu with caption SuggestionsCaption
-    property SubMenu: Boolean read FSubMenu write SetUseSubMenu default False;
+    property SubMenu: boolean read FSubMenu write SetUseSubMenu default False;
     // Caption of the submenu when UseSubMenu is True
     property SubMenuCaption: string read FSubMenuCaption write SetSuggestionsCaption;
     // Index where suggestions (or submenu) will be inserted in the PopupMenu
-    property SubMenuIndex: Integer read FSubMenuIndex write SetSubMenuIndex default 0;
+    property SubMenuIndex: integer read FSubMenuIndex write SetSubMenuIndex default 0;
+
+    // Select spell checking engine: Windows (default) or Hunspell
+    property Engine: TSpellEngine read FEngine write SetEngine default seWindows;
 
     // Called after a check has finished and (if AutoApply) errors are applied
     property OnSpellCheckComplete: TSpellCheckCompleteEvent read FOnSpellCheckComplete write FOnSpellCheckComplete;
@@ -142,6 +161,7 @@ constructor TSpellChecker.Create(AOwner: TComponent);
 begin
   inherited Create(AOwner);
   FEnabled := True;
+  FDestroying := False;
   FOptions := [scoSpelling];
   FAddEmptySuggestions := True;
   FRealTime := False;
@@ -159,6 +179,9 @@ begin
   FPrevOnChange := nil;
   FContextMenuOpen := False;
   FReplaceJustDone := False;
+  FEngine := seWindows;
+  FHunSpellChecker := nil;
+  FHunDictionaryLoaded := False;
 
   // Default integration settings
   FPopupMenu := nil;
@@ -169,11 +192,18 @@ end;
 
 destructor TSpellChecker.Destroy;
 begin
-  // Cancel any running check and ignore its result
+  // Signal that the component is being destroyed
+  FDestroying := True;
+
+  // Cancel any running check and wait for it to finish
   if FChecking then
   begin
     InterlockedExchange(FCancelRequested, 1);
-    FCheckThread := nil;
+    while FChecking do
+    begin
+      Sleep(10);
+      CheckSynchronize; // Process any pending Synchronize calls (OnBackgroundDone)
+    end;
   end;
 
   // Restore previous handlers if we replaced them
@@ -195,6 +225,10 @@ begin
   // Free internal spell checker
   if Assigned(FSpellChecker) then
     FreeAndNil(FSpellChecker);
+
+  // Free Hunspell checker (safe now because background thread has finished)
+  if Assigned(FHunSpellChecker) then
+    FreeAndNil(FHunSpellChecker);
 
   // Clear error array
   SetLength(FLastErrors, 0);
@@ -365,7 +399,7 @@ begin
   end;
 end;
 
-procedure TSpellChecker.SetUseSubMenu(AValue: Boolean);
+procedure TSpellChecker.SetUseSubMenu(AValue: boolean);
 begin
   if FSubMenu <> AValue then
   begin
@@ -385,13 +419,59 @@ begin
   end;
 end;
 
-procedure TSpellChecker.SetSubMenuIndex(AValue: Integer);
+procedure TSpellChecker.SetSubMenuIndex(AValue: integer);
 begin
   if FSubMenuIndex <> AValue then
   begin
     FSubMenuIndex := AValue;
     if Assigned(FSpellChecker) then
       FSpellChecker.SubMenuIndex := AValue;
+  end;
+end;
+
+procedure TSpellChecker.SetEngine(AValue: TSpellEngine);
+begin
+  if FEngine <> AValue then
+  begin
+    FEngine := AValue;
+    if FEngine = seHunspell then
+    begin
+      if not Assigned(FHunSpellChecker) then
+        FHunSpellChecker := THunSpellChecker.Create;
+    end;
+    if FEnabled and Assigned(FRichMemo) then
+      CheckNow;
+  end;
+end;
+
+procedure TSpellChecker.LoadHunDictionaryFromFiles(const AFFFileName, DICFileName: string);
+begin
+  if not Assigned(FHunSpellChecker) then
+    FHunSpellChecker := THunSpellChecker.Create;
+  FHunSpellChecker.LoadFromFiles(AFFFileName, DICFileName);
+  FHunDictionaryLoaded := True;
+  if (FEngine = seHunspell) and FEnabled and Assigned(FRichMemo) then
+    CheckNow;
+end;
+
+procedure TSpellChecker.LoadHunDictionaryFromStream(AFFStream, DICStream: TStream);
+begin
+  if not Assigned(FHunSpellChecker) then
+    FHunSpellChecker := THunSpellChecker.Create;
+  FHunSpellChecker.LoadFromStream(AFFStream, DICStream);
+  FHunDictionaryLoaded := True;
+  if (FEngine = seHunspell) and FEnabled and Assigned(FRichMemo) then
+    CheckNow;
+end;
+
+procedure TSpellChecker.UnloadHunDictionary;
+begin
+  if Assigned(FHunSpellChecker) then
+  begin
+    FreeAndNil(FHunSpellChecker);
+    FHunDictionaryLoaded := False;
+    if (FEngine = seHunspell) and Assigned(FSpellChecker) then
+      ClearUnderlines;
   end;
 end;
 
@@ -433,7 +513,7 @@ begin
   FDebounceTimer.Enabled := True;
 end;
 
-procedure TSpellChecker.OnRichMemoContextPopup(Sender: TObject; MousePos: TPoint; var Handled: Boolean);
+procedure TSpellChecker.OnRichMemoContextPopup(Sender: TObject; MousePos: TPoint; var Handled: boolean);
 var
   ScreenPoint: TPoint;
 begin
@@ -515,8 +595,20 @@ end;
 
 procedure TSpellChecker.CheckNow;
 begin
+  // Do not run checks in design-time
+  if csDesigning in ComponentState then
+    Exit;
+
   if not FEnabled or not Assigned(FRichMemo) or not Assigned(FSpellChecker) then
     Exit;
+
+  // For Hunspell engine, dictionary must be loaded
+  if (FEngine = seHunspell) and ((FHunSpellChecker = nil) or (not FHunDictionaryLoaded)) then
+  begin
+    ClearErrors;
+    Exit;
+  end;
+
   StartCheck;
 end;
 
@@ -550,13 +642,28 @@ end;
 
 procedure TSpellChecker.DoBackgroundCheck;
 begin
-  FLastErrors := TSpell.CheckText(FCheckText, FLanguage, FOptions, FAddEmptySuggestions);
+  if FEngine = seHunspell then
+  begin
+    if Assigned(FHunSpellChecker) then
+      FLastErrors := TSpell.HunCheckText(FCheckText, FHunSpellChecker, FOptions, FAddEmptySuggestions)
+    else
+      SetLength(FLastErrors, 0);
+  end
+  else
+    FLastErrors := TSpell.CheckText(FCheckText, FLanguage, FOptions, FAddEmptySuggestions);
 end;
 
 procedure TSpellChecker.OnBackgroundDone;
 var
   ErrorCount: integer;
 begin
+  // If the component is being destroyed, do not touch UI or resources
+  if FDestroying then
+  begin
+    FChecking := False;
+    Exit;
+  end;
+
   if InterlockedCompareExchange(FCancelRequested, 0, 0) = 1 then
   begin
     FChecking := False;
