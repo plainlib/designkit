@@ -16,12 +16,21 @@ unit SpellChecker;
 interface
 
 uses
-  Controls, Classes, SysUtils, ExtCtrls, Menus, RichMemo, RichSpellChecker, SpellUtils,
+  Controls,
+  Classes,
+  SysUtils,
+  ExtCtrls,
+  Menus,
+  LazFileUtils,
+  RichMemo,
+  RichSpellChecker,
+  SpellUtils,
   HunSpellChecker,
   {$IFDEF WINDOWS}
   WinSpellChecker,
   {$ENDIF}
-  OneShotThread, OneShotTimer;
+  OneShotThread,
+  OneShotTimer;
 
 type
   // Event fired after spell check results have been applied to the RichMemo
@@ -49,6 +58,7 @@ type
     FEngine: TSpellEngine;
     FHunSpellChecker: THunSpellChecker;
     FHunDictionaryLoaded: boolean; // True when a Hunspell dictionary has been loaded
+    FDicPath: string;              // Directory where Hunspell dictionaries are stored
 
     // Integration with external PopupMenu
     FPopupMenu: TPopupMenu;
@@ -81,6 +91,7 @@ type
     procedure SetSuggestionsCaption(const AValue: string);
     procedure SetSubMenuIndex(AValue: integer);
     procedure SetEngine(AValue: TSpellEngine);
+    procedure SetDicPath(const AValue: string);
     procedure UpdateContextMenuHandler;
     procedure OnRichMemoChange(Sender: TObject);
     procedure OnRichMemoContextPopup(Sender: TObject; MousePos: TPoint; var Handled: boolean);
@@ -91,6 +102,8 @@ type
     procedure ApplyErrors(const AErrors: RichSpellChecker.TSpellErrorArray);
     procedure ClearUnderlines;
     procedure DoSpellCheckNeeded(Sender: TObject);
+    procedure LoadHunDictionaryForLanguage;
+    function TryLoadHunDictionary(const AffFile, DicFile: string): boolean;
   protected
     procedure Notification(AComponent: TComponent; Operation: TOperation); override;
   public
@@ -146,6 +159,9 @@ type
     // Select spell checking engine: Windows (default) or Hunspell
     property Engine: TSpellEngine read FEngine write SetEngine default seWindows;
 
+    // Directory path for Hunspell dictionaries (.aff and .dic). Can be absolute or relative to the application folder.
+    property DicPath: string read FDicPath write SetDicPath;
+
     // Called after a check has finished and (if AutoApply) errors are applied
     property OnSpellCheckComplete: TSpellCheckCompleteEvent read FOnSpellCheckComplete write FOnSpellCheckComplete;
     // Called when context menu is about to be shown (before our automatic handler).
@@ -154,6 +170,17 @@ type
   end;
 
 implementation
+
+function IsPathAbsolute(const Path: string): boolean;
+begin
+  {$IFDEF WINDOWS}
+  // Absolute if starts with drive letter and separator (e.g. C:\) or UNC (\\)
+  Result := ((Length(Path) >= 3) and (Path[2] = ':') and ((Path[3] = '\') or (Path[3] = '/')))
+            or ((Length(Path) >= 2) and (Path[1] = '\') and (Path[2] = '\'));
+  {$ELSE}
+  Result := (Length(Path) > 0) and (Path[1] = '/');
+  {$ENDIF}
+end;
 
 { TSpellChecker }
 
@@ -182,6 +209,7 @@ begin
   FEngine := seWindows;
   FHunSpellChecker := nil;
   FHunDictionaryLoaded := False;
+  FDicPath := '';
 
   // Default integration settings
   FPopupMenu := nil;
@@ -309,6 +337,9 @@ begin
   if FLanguage <> AValue then
   begin
     FLanguage := AValue;
+    // Reload Hunspell dictionary if engine is Hunspell
+    if FEngine = seHunspell then
+      LoadHunDictionaryForLanguage;
     if FEnabled and Assigned(FRichMemo) then
       CheckNow;
   end;
@@ -438,9 +469,20 @@ begin
     begin
       if not Assigned(FHunSpellChecker) then
         FHunSpellChecker := THunSpellChecker.Create;
+      LoadHunDictionaryForLanguage;
     end;
     if FEnabled and Assigned(FRichMemo) then
       CheckNow;
+  end;
+end;
+
+procedure TSpellChecker.SetDicPath(const AValue: string);
+begin
+  if FDicPath <> AValue then
+  begin
+    FDicPath := AValue;
+    if (FEngine = seHunspell) and (not (csDesigning in ComponentState)) then
+      LoadHunDictionaryForLanguage;
   end;
 end;
 
@@ -448,9 +490,8 @@ procedure TSpellChecker.LoadHunDictionaryFromFiles(const AFFFileName, DICFileNam
 begin
   if not Assigned(FHunSpellChecker) then
     FHunSpellChecker := THunSpellChecker.Create;
-  FHunSpellChecker.LoadFromFiles(AFFFileName, DICFileName);
-  FHunDictionaryLoaded := True;
-  if (FEngine = seHunspell) and FEnabled and Assigned(FRichMemo) then
+  FHunDictionaryLoaded := FHunSpellChecker.LoadFromFiles(AFFFileName, DICFileName);
+  if FHunDictionaryLoaded and (FEngine = seHunspell) and FEnabled and Assigned(FRichMemo) then
     CheckNow;
 end;
 
@@ -458,9 +499,8 @@ procedure TSpellChecker.LoadHunDictionaryFromStream(AFFStream, DICStream: TStrea
 begin
   if not Assigned(FHunSpellChecker) then
     FHunSpellChecker := THunSpellChecker.Create;
-  FHunSpellChecker.LoadFromStream(AFFStream, DICStream);
-  FHunDictionaryLoaded := True;
-  if (FEngine = seHunspell) and FEnabled and Assigned(FRichMemo) then
+  FHunDictionaryLoaded := FHunSpellChecker.LoadFromStream(AFFStream, DICStream);
+  if FHunDictionaryLoaded and (FEngine = seHunspell) and FEnabled and Assigned(FRichMemo) then
     CheckNow;
 end;
 
@@ -714,6 +754,54 @@ procedure TSpellChecker.ClearUnderlines;
 begin
   if Assigned(FSpellChecker) then
     FSpellChecker.Clear;
+end;
+
+procedure TSpellChecker.LoadHunDictionaryForLanguage;
+var
+  candidates: TStringArray;
+  i: integer;
+  affFile, dicFile: string;
+  basePath: string;
+begin
+  if csDesigning in ComponentState then
+    Exit;
+
+  // Unload previous dictionary
+  if Assigned(FHunSpellChecker) then
+  begin
+    FreeAndNil(FHunSpellChecker);
+    FHunDictionaryLoaded := False;
+  end;
+
+  if FDicPath = '' then
+    Exit;
+
+  // Resolve relative path to application directory
+  basePath := FDicPath;
+  if not IsPathAbsolute(basePath) then
+    basePath := ExtractFilePath(ParamStr(0)) + basePath;
+  basePath := IncludeTrailingPathDelimiter(basePath);
+
+  candidates := HunspellDictionaryCandidates(FLanguage);
+
+  for i := 0 to High(candidates) do
+  begin
+    affFile := basePath + candidates[i] + '.aff';
+    dicFile := basePath + candidates[i] + '.dic';
+    if TryLoadHunDictionary(affFile, dicFile) then
+      Break;
+  end;
+end;
+
+function TSpellChecker.TryLoadHunDictionary(const AffFile, DicFile: string): boolean;
+begin
+  Result := False;
+  if not FileExists(AffFile) or not FileExists(DicFile) then
+    Exit;
+  if not Assigned(FHunSpellChecker) then
+    FHunSpellChecker := THunSpellChecker.Create;
+  FHunDictionaryLoaded := FHunSpellChecker.LoadFromFiles(AffFile, DicFile);
+  Result := FHunDictionaryLoaded;
 end;
 
 end.
