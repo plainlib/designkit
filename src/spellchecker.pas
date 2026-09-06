@@ -317,7 +317,6 @@ end;
 procedure TSpellChecker.Loaded;
 begin
   inherited Loaded;
-  if csDesigning in ComponentState then Exit; // Skip in IDE designer
   if FEngine = seHunspell then
     LoadHunDictionaryForLanguage;
   if FEnabled and Assigned(FRichMemo) then
@@ -504,8 +503,8 @@ begin
       if not Assigned(FHunSpellChecker) then
         FHunSpellChecker := THunSpellChecker.Create;
       // Attempt to load dictionary if possible (unless loading from .lfm)
-      if ((FDicPath <> '') or (FDicUrl <> '')) and (FLanguage <> '') and not (csDesigning in ComponentState) and not
-        (csLoading in ComponentState) then
+      if ((FDicPath <> '') or (FDicUrl <> '')) and (FLanguage <> '') and not (csDesigning in ComponentState) and
+        not (csLoading in ComponentState) then
         LoadHunDictionaryForLanguage;
     end;
     if FEnabled and Assigned(FRichMemo) and not (csLoading in ComponentState) then
@@ -687,7 +686,7 @@ end;
 procedure TSpellChecker.CheckNow;
 begin
   // Do not run checks in design-time or during loading
-  if csDesigning in ComponentState then Exit;
+  if (csDesigning in ComponentState) and (FEngine <> seWindows) then Exit;
   if csLoading in ComponentState then Exit;
 
   if not FEnabled or not Assigned(FRichMemo) or not Assigned(FSpellChecker) then

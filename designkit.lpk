@@ -67,22 +67,22 @@ SOFTWARE."/>
     </Files>
     <RequiredPkgs>
       <Item>
-        <PackageName Value="richkit"/>
-      </Item>
-      <Item>
-        <PackageName Value="richmemopackage"/>
+        <PackageName Value="LCL"/>
       </Item>
       <Item>
         <PackageName Value="IDEIntf"/>
       </Item>
       <Item>
-        <PackageName Value="toolkit"/>
+        <PackageName Value="richmemopackage"/>
       </Item>
       <Item>
         <PackageName Value="helpers"/>
       </Item>
       <Item>
-        <PackageName Value="LCL"/>
+        <PackageName Value="toolkit"/>
+      </Item>
+      <Item>
+        <PackageName Value="richkit"/>
       </Item>
     </RequiredPkgs>
     <UsageOptions>
