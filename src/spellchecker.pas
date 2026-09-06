@@ -140,7 +140,7 @@ type
   published
     // The RichMemo to be checked
     property RichMemo: TRichMemo read FRichMemo write SetRichMemo;
-    // BCP-47 language tag, e.g. 'en-US' or 'ru-RU' (used only by Windows engine)
+    // BCP-47 language tag, e.g. 'en-US' or 'ru-RU', two-letter codes are allowed
     property Language: string read FLanguage write SetLanguage;
     // Enable or disable spell checking
     property Enabled: boolean read FEnabled write SetEnabled default True;
@@ -372,8 +372,8 @@ begin
   if FLanguage = AValue then Exit;
   FLanguage := AValue;
   // Only load dictionary when DicPath is set and engine is Hunspell
-  if (FEngine = seHunspell) and (FDicPath <> '') and (FLanguage <> '') and not (csDesigning in ComponentState) and
-    not (csLoading in ComponentState) then
+  if (FEngine = seHunspell) and ((FDicPath <> '') or (FDicUrl <> '')) and (FLanguage <> '') and not
+    (csDesigning in ComponentState) and not (csLoading in ComponentState) then
     LoadHunDictionaryForLanguage;
   if FEnabled and Assigned(FRichMemo) and not (csLoading in ComponentState) then
     CheckNow;
@@ -504,7 +504,8 @@ begin
       if not Assigned(FHunSpellChecker) then
         FHunSpellChecker := THunSpellChecker.Create;
       // Attempt to load dictionary if possible (unless loading from .lfm)
-      if (FDicPath <> '') and (FLanguage <> '') and not (csDesigning in ComponentState) and not (csLoading in ComponentState) then
+      if ((FDicPath <> '') or (FDicUrl <> '')) and (FLanguage <> '') and not (csDesigning in ComponentState) and not
+        (csLoading in ComponentState) then
         LoadHunDictionaryForLanguage;
     end;
     if FEnabled and Assigned(FRichMemo) and not (csLoading in ComponentState) then
@@ -778,7 +779,16 @@ begin
 
   if FAutoApply then
   begin
-    TSpell.ApplyErrors(FSpellChecker, FLastErrors);
+    // Skip applying if text has changed since check started
+    if FCheckText = FRichMemo.Text then
+    begin
+      FRichMemo.Lines.BeginUpdate;
+      try
+        TSpell.ApplyErrors(FSpellChecker, FLastErrors);
+      finally
+        FRichMemo.Lines.EndUpdate;
+      end;
+    end;
   end;
 
   ErrorCount := Length(FLastErrors);
@@ -827,26 +837,29 @@ begin
     FHunDictionaryLoaded := False;
   end;
 
-  if (FDicPath = '') or (FLanguage = '') then
+  if FLanguage = '' then
     Exit;
 
-  // Resolve relative path to application directory
-  basePath := FDicPath;
-  if not IsPathAbsolute(basePath) then
-    basePath := ExtractFilePath(ParamStr(0)) + basePath;
-  basePath := IncludeTrailingPathDelimiter(basePath);
-
-  candidates := HunspellDictionaryCandidates(FLanguage);
-
   found := False;
-  for i := 0 to High(candidates) do
+  if FDicPath <> '' then
   begin
-    affFile := basePath + candidates[i] + '.aff';
-    dicFile := basePath + candidates[i] + '.dic';
-    if TryLoadHunDictionary(affFile, dicFile) then
+    // Resolve relative path to application directory
+    basePath := FDicPath;
+    if not IsPathAbsolute(basePath) then
+      basePath := ExtractFilePath(ParamStr(0)) + basePath;
+    basePath := IncludeTrailingPathDelimiter(basePath);
+
+    candidates := HunspellDictionaryCandidates(FLanguage);
+
+    for i := 0 to High(candidates) do
     begin
-      found := True;
-      Break;
+      affFile := basePath + candidates[i] + '.aff';
+      dicFile := basePath + candidates[i] + '.dic';
+      if TryLoadHunDictionary(affFile, dicFile) then
+      begin
+        found := True;
+        Break;
+      end;
     end;
   end;
 
