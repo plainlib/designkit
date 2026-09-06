@@ -106,6 +106,7 @@ type
     function TryLoadHunDictionary(const AffFile, DicFile: string): boolean;
   protected
     procedure Notification(AComponent: TComponent; Operation: TOperation); override;
+    procedure Loaded; override; // Called after all properties are loaded from .lfm
   public
     constructor Create(AOwner: TComponent); override;
     destructor Destroy; override;
@@ -210,6 +211,7 @@ begin
   FHunSpellChecker := nil;
   FHunDictionaryLoaded := False;
   FDicPath := '';
+  FLanguage := ''; // Initialize language to empty
 
   // Default integration settings
   FPopupMenu := nil;
@@ -293,6 +295,16 @@ begin
   end;
 end;
 
+procedure TSpellChecker.Loaded;
+begin
+  inherited Loaded;
+  if csDesigning in ComponentState then Exit; // Skip in IDE designer
+  if FEngine = seHunspell then
+    LoadHunDictionaryForLanguage;
+  if FEnabled and Assigned(FRichMemo) then
+    CheckNow;
+end;
+
 procedure TSpellChecker.SetRichMemo(AValue: TRichMemo);
 begin
   if FRichMemo = AValue then Exit;
@@ -329,20 +341,23 @@ begin
     FSpellChecker.SubMenuIndex := FSubMenuIndex;
 
     ClearUnderlines;
+
+    // If real-time is enabled and all settings ready, start check immediately
+    if FEnabled and FRealTime and not (csDesigning in ComponentState) and not (csLoading in ComponentState) then
+      CheckNow;
   end;
 end;
 
 procedure TSpellChecker.SetLanguage(const AValue: string);
 begin
-  if FLanguage <> AValue then
-  begin
-    FLanguage := AValue;
-    // Reload Hunspell dictionary if engine is Hunspell
-    if FEngine = seHunspell then
-      LoadHunDictionaryForLanguage;
-    if FEnabled and Assigned(FRichMemo) then
-      CheckNow;
-  end;
+  if FLanguage = AValue then Exit;
+  FLanguage := AValue;
+  // Only load dictionary when DicPath is set and engine is Hunspell
+  if (FEngine = seHunspell) and (FDicPath <> '') and (FLanguage <> '') and
+     not (csDesigning in ComponentState) and not (csLoading in ComponentState) then
+    LoadHunDictionaryForLanguage;
+  if FEnabled and Assigned(FRichMemo) and not (csLoading in ComponentState) then
+    CheckNow;
 end;
 
 procedure TSpellChecker.SetEnabled(AValue: boolean);
@@ -352,7 +367,7 @@ begin
     FEnabled := AValue;
     if FEnabled then
     begin
-      if Assigned(FRichMemo) then
+      if Assigned(FRichMemo) and not (csLoading in ComponentState) then
         CheckNow;
     end
     else
@@ -376,7 +391,7 @@ begin
         FDebounceTimer.Enabled := False;
         FDebounceTimer.OnTimer := @DoDebouncedCheck;
       end;
-      if Assigned(FRichMemo) and FEnabled then
+      if Assigned(FRichMemo) and FEnabled and not (csLoading in ComponentState) then
         CheckNow;
     end
     else
@@ -406,7 +421,7 @@ begin
   if FOptions <> AValue then
   begin
     FOptions := AValue;
-    if FEnabled and Assigned(FRichMemo) then
+    if FEnabled and Assigned(FRichMemo) and not (csLoading in ComponentState) then
       CheckNow;
   end;
 end;
@@ -469,9 +484,11 @@ begin
     begin
       if not Assigned(FHunSpellChecker) then
         FHunSpellChecker := THunSpellChecker.Create;
-      LoadHunDictionaryForLanguage;
+      // Attempt to load dictionary if possible (unless loading from .lfm)
+      if (FDicPath <> '') and (FLanguage <> '') and not (csDesigning in ComponentState) and not (csLoading in ComponentState) then
+        LoadHunDictionaryForLanguage;
     end;
-    if FEnabled and Assigned(FRichMemo) then
+    if FEnabled and Assigned(FRichMemo) and not (csLoading in ComponentState) then
       CheckNow;
   end;
 end;
@@ -481,7 +498,8 @@ begin
   if FDicPath <> AValue then
   begin
     FDicPath := AValue;
-    if (FEngine = seHunspell) and (not (csDesigning in ComponentState)) then
+    if (FEngine = seHunspell) and (FDicPath <> '') and (FLanguage <> '') and
+       not (csDesigning in ComponentState) and not (csLoading in ComponentState) then
       LoadHunDictionaryForLanguage;
   end;
 end;
@@ -635,9 +653,9 @@ end;
 
 procedure TSpellChecker.CheckNow;
 begin
-  // Do not run checks in design-time
-  if csDesigning in ComponentState then
-    Exit;
+  // Do not run checks in design-time or during loading
+  if csDesigning in ComponentState then Exit;
+  if csLoading in ComponentState then Exit;
 
   if not FEnabled or not Assigned(FRichMemo) or not Assigned(FSpellChecker) then
     Exit;
@@ -763,8 +781,8 @@ var
   affFile, dicFile: string;
   basePath: string;
 begin
-  if csDesigning in ComponentState then
-    Exit;
+  if csDesigning in ComponentState then Exit;
+  if csLoading in ComponentState then Exit;
 
   // Unload previous dictionary
   if Assigned(FHunSpellChecker) then
@@ -773,7 +791,7 @@ begin
     FHunDictionaryLoaded := False;
   end;
 
-  if FDicPath = '' then
+  if (FDicPath = '') or (FLanguage = '') then
     Exit;
 
   // Resolve relative path to application directory
