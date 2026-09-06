@@ -30,7 +30,8 @@ uses
   WinSpellChecker,
   {$ENDIF}
   OneShotThread,
-  OneShotTimer;
+  OneShotTimer,
+  Downloader;
 
 type
   // Event fired after spell check results have been applied to the RichMemo
@@ -59,6 +60,11 @@ type
     FHunSpellChecker: THunSpellChecker;
     FHunDictionaryLoaded: boolean; // True when a Hunspell dictionary has been loaded
     FDicPath: string;              // Directory where Hunspell dictionaries are stored
+    FDicUrl: string;               // URL template for downloading dictionaries
+
+    FDownloading: boolean;         // True while dictionary download is in progress
+    FDownloadLang: string;         // Language for which download was started
+    FDownloadCandidate: string;    // The candidate for whom the download was performed
 
     // Integration with external PopupMenu
     FPopupMenu: TPopupMenu;
@@ -92,6 +98,7 @@ type
     procedure SetSubMenuIndex(AValue: integer);
     procedure SetEngine(AValue: TSpellEngine);
     procedure SetDicPath(const AValue: string);
+    procedure SetDicUrl(const AValue: string);
     procedure UpdateContextMenuHandler;
     procedure OnRichMemoChange(Sender: TObject);
     procedure OnRichMemoContextPopup(Sender: TObject; MousePos: TPoint; var Handled: boolean);
@@ -104,6 +111,10 @@ type
     procedure DoSpellCheckNeeded(Sender: TObject);
     procedure LoadHunDictionaryForLanguage;
     function TryLoadHunDictionary(const AffFile, DicFile: string): boolean;
+    procedure StartDictionaryDownload(const LangCode: string);
+    function BuildDictURL(const Template, CandidateCode, Ext: string): string;
+    function GetLibreOfficePathByCode(const Code: string): string;
+    procedure OnDictionaryDownloadComplete(Sender: TObject; AStreams: array of TMemoryStream; AErrors: array of string);
   protected
     procedure Notification(AComponent: TComponent; Operation: TOperation); override;
     procedure Loaded; override; // Called after all properties are loaded from .lfm
@@ -141,7 +152,7 @@ type
     // Automatically check after text changes (with debounce)
     property RealTime: boolean read FRealTime write SetRealTime default False;
     // Debounce delay in milliseconds for real-time checks
-    property CheckDelay: integer read FCheckDelay write SetCheckDelay default 500;
+    property CheckDelay: integer read FCheckDelay write SetCheckDelay default 1000;
     // Automatically apply underlines after check completes
     property AutoApply: boolean read FAutoApply write FAutoApply default True;
     // Automatically attach to RichMemo.OnContextPopup to show suggestion menu.
@@ -162,6 +173,11 @@ type
 
     // Directory path for Hunspell dictionaries (.aff and .dic). Can be absolute or relative to the application folder.
     property DicPath: string read FDicPath write SetDicPath;
+    // URL template for downloading Hunspell dictionaries. Supports placeholders:
+    //   {dict}      - replaced by language code (e.g. en_US) and then .aff/.dic appended
+    //   {libredict} - replaced by path inside LibreOffice dictionaries repository
+    // If empty, no automatic download is performed.
+    property DicUrl: string read FDicUrl write SetDicUrl;
 
     // Called after a check has finished and (if AutoApply) errors are applied
     property OnSpellCheckComplete: TSpellCheckCompleteEvent read FOnSpellCheckComplete write FOnSpellCheckComplete;
@@ -193,7 +209,7 @@ begin
   FOptions := [scoSpelling];
   FAddEmptySuggestions := True;
   FRealTime := False;
-  FCheckDelay := 500;
+  FCheckDelay := 1000;
   FAutoApply := True;
   FAutoContextMenu := True;
   FChecking := False;
@@ -211,6 +227,9 @@ begin
   FHunSpellChecker := nil;
   FHunDictionaryLoaded := False;
   FDicPath := '';
+  FDicUrl := 'https://raw.githubusercontent.com/LibreOffice/dictionaries/master/{libredict}';
+  FDownloading := False;
+  FDownloadLang := '';
   FLanguage := ''; // Initialize language to empty
 
   // Default integration settings
@@ -353,8 +372,8 @@ begin
   if FLanguage = AValue then Exit;
   FLanguage := AValue;
   // Only load dictionary when DicPath is set and engine is Hunspell
-  if (FEngine = seHunspell) and (FDicPath <> '') and (FLanguage <> '') and
-     not (csDesigning in ComponentState) and not (csLoading in ComponentState) then
+  if (FEngine = seHunspell) and (FDicPath <> '') and (FLanguage <> '') and not (csDesigning in ComponentState) and
+    not (csLoading in ComponentState) then
     LoadHunDictionaryForLanguage;
   if FEnabled and Assigned(FRichMemo) and not (csLoading in ComponentState) then
     CheckNow;
@@ -498,8 +517,21 @@ begin
   if FDicPath <> AValue then
   begin
     FDicPath := AValue;
-    if (FEngine = seHunspell) and (FDicPath <> '') and (FLanguage <> '') and
-       not (csDesigning in ComponentState) and not (csLoading in ComponentState) then
+    if (FEngine = seHunspell) and (FDicPath <> '') and (FLanguage <> '') and not (csDesigning in ComponentState) and
+      not (csLoading in ComponentState) then
+      LoadHunDictionaryForLanguage;
+  end;
+end;
+
+procedure TSpellChecker.SetDicUrl(const AValue: string);
+begin
+  if FDicUrl <> AValue then
+  begin
+    FDicUrl := AValue;
+    // If URL is set and we are in Hunspell mode, we might want to trigger download
+    // but only if dictionary not already loaded and language/path set.
+    if (FEngine = seHunspell) and (FDicUrl <> '') and (FDicPath <> '') and (FLanguage <> '') and not
+      (csDesigning in ComponentState) and not (csLoading in ComponentState) then
       LoadHunDictionaryForLanguage;
   end;
 end;
@@ -780,9 +812,13 @@ var
   i: integer;
   affFile, dicFile: string;
   basePath: string;
+  found: boolean;
 begin
   if csDesigning in ComponentState then Exit;
   if csLoading in ComponentState then Exit;
+
+  // Prevent concurrent downloads
+  if FDownloading then Exit;
 
   // Unload previous dictionary
   if Assigned(FHunSpellChecker) then
@@ -802,13 +838,250 @@ begin
 
   candidates := HunspellDictionaryCandidates(FLanguage);
 
+  found := False;
   for i := 0 to High(candidates) do
   begin
     affFile := basePath + candidates[i] + '.aff';
     dicFile := basePath + candidates[i] + '.dic';
     if TryLoadHunDictionary(affFile, dicFile) then
+    begin
+      found := True;
       Break;
+    end;
   end;
+
+  if not found and (FDicUrl <> '') then
+  begin
+    // Start asynchronous download
+    StartDictionaryDownload(FLanguage);
+  end;
+end;
+
+procedure TSpellChecker.StartDictionaryDownload(const LangCode: string);
+var
+  candidates: TStringArray;
+  i: integer;
+  urlAff, urlDic: string;
+begin
+  if FDownloading then Exit;
+  if FDicUrl = '' then Exit;
+
+  candidates := HunspellDictionaryCandidates(LangCode);
+
+  for i := 0 to High(candidates) do
+  begin
+    urlAff := BuildDictURL(FDicUrl, candidates[i], 'aff');
+    urlDic := BuildDictURL(FDicUrl, candidates[i], 'dic');
+    if (urlAff <> '') and (urlDic <> '') then
+    begin
+      FDownloading := True;
+      FDownloadLang := LangCode;
+      FDownloadCandidate := candidates[i];
+      DownloadFiles([urlAff, urlDic], @OnDictionaryDownloadComplete);
+      Break;
+    end;
+  end;
+end;
+
+function TSpellChecker.BuildDictURL(const Template, CandidateCode, Ext: string): string;
+var
+  url: string;
+  librePath: string;
+begin
+  url := Template;
+
+  if Pos('{dict}', url) > 0 then
+  begin
+    // Replace {dict} with candidate code + extension
+    url := StringReplace(url, '{dict}', CandidateCode + '.' + Ext, [rfReplaceAll]);
+  end
+  else if Pos('{libredict}', url) > 0 then
+  begin
+    librePath := GetLibreOfficePathByCode(CandidateCode);
+    if librePath = '' then
+      Exit('');
+    url := StringReplace(url, '{libredict}', librePath + '.' + Ext, [rfReplaceAll]);
+  end
+  else
+  begin
+    // No placeholder found, assume template is base URL, append code and ext?
+    // For safety, return empty to avoid malformed URLs
+    Exit('');
+  end;
+
+  Result := url;
+end;
+
+function TSpellChecker.GetLibreOfficePathByCode(const Code: string): string;
+begin
+  // Returns path (without extension) inside LibreOffice dictionaries repository for given candidate code.
+  // Code is expected to be a candidate from HunspellDictionaryCandidates (may contain '-' or '_').
+  case Code of
+    'af_ZA': Result := 'af_ZA/af_ZA';
+    'an_ES': Result := 'an_ES/an_ES';
+    'ar': Result := 'ar/ar';
+    'as_IN': Result := 'as_IN/as_IN';
+    'be_BY': Result := 'be_BY/be-official';
+    'be-official': Result := 'be_BY/be-official';
+    'bg_BG': Result := 'bg_BG/bg_BG';
+    'bn_BD': Result := 'bn_BD/bn_BD';
+    'bo': Result := 'bo/bo';
+    'br_FR': Result := 'br_FR/br_FR';
+    'bs_BA': Result := 'bs_BA/bs_BA';
+    'ca': Result := 'ca/dictionaries/ca';
+    'ca-valencia': Result := 'ca/dictionaries/ca-valencia';
+    'ckb': Result := 'ckb/dictionaries/ckb';
+    'cs_CZ': Result := 'cs_CZ/cs_CZ';
+    'da_DK': Result := 'da_DK/da_DK';
+    'de': Result := 'de/de_DE_frami';
+    'de_DE': Result := 'de/de_DE_frami';
+    'de_AT': Result := 'de/de_AT_frami';
+    'de_CH': Result := 'de/de_CH_frami';
+    'de_DE_frami': Result := 'de/de_DE_frami';
+    'de_AT_frami': Result := 'de/de_AT_frami';
+    'de_CH_frami': Result := 'de/de_CH_frami';
+    'el_GR': Result := 'el_GR/el_GR';
+    'en': Result := 'en/en_US';
+    'en_US': Result := 'en/en_US';
+    'en_AU': Result := 'en/en_AU';
+    'en_CA': Result := 'en/en_CA';
+    'en_GB': Result := 'en/en_GB';
+    'en_ZA': Result := 'en/en_ZA';
+    'eo': Result := 'eo/eo';
+    'es': Result := 'es/es_ES';
+    'es_ES': Result := 'es/es_ES';
+    'es_AR': Result := 'es/es_AR';
+    'es_BO': Result := 'es/es_BO';
+    'es_CL': Result := 'es/es_CL';
+    'es_CO': Result := 'es/es_CO';
+    'es_CR': Result := 'es/es_CR';
+    'es_CU': Result := 'es/es_CU';
+    'es_DO': Result := 'es/es_DO';
+    'es_EC': Result := 'es/es_EC';
+    'es_GQ': Result := 'es/es_GQ';
+    'es_GT': Result := 'es/es_GT';
+    'es_HN': Result := 'es/es_HN';
+    'es_MX': Result := 'es/es_MX';
+    'es_NI': Result := 'es/es_NI';
+    'es_PA': Result := 'es/es_PA';
+    'es_PE': Result := 'es/es_PE';
+    'es_PH': Result := 'es/es_PH';
+    'es_PR': Result := 'es/es_PR';
+    'es_PY': Result := 'es/es_PY';
+    'es_SV': Result := 'es/es_SV';
+    'es_US': Result := 'es/es_US';
+    'es_UY': Result := 'es/es_UY';
+    'es_VE': Result := 'es/es_VE';
+    'et_EE': Result := 'et_EE/et_EE';
+    'fa_IR': Result := 'fa_IR/fa-IR';
+    'fa-IR': Result := 'fa_IR/fa-IR';
+    'fr_FR': Result := 'fr_FR/dictionaries/fr';
+    'fr': Result := 'fr_FR/dictionaries/fr';
+    'gd_GB': Result := 'gd_GB/gd_GB';
+    'gl': Result := 'gl/gl_ES';
+    'gl_ES': Result := 'gl/gl_ES';
+    'gu_IN': Result := 'gu_IN/gu_IN';
+    'gug': Result := 'gug/gug';
+    'he_IL': Result := 'he_IL/he_IL';
+    'hi_IN': Result := 'hi_IN/hi_IN';
+    'hr_HR': Result := 'hr_HR/hr_HR';
+    'hu_HU': Result := 'hu_HU/hu_HU';
+    'id': Result := 'id/id_ID';
+    'id_ID': Result := 'id/id_ID';
+    'is': Result := 'is/is';
+    'it_IT': Result := 'it_IT/it_IT';
+    'kmr_Latn': Result := 'kmr_Latn/kmr_Latn';
+    'kn_IN': Result := 'kn_IN/kn_IN';
+    'ko_KR': Result := 'ko_KR/ko_KR';
+    'lo_LA': Result := 'lo_LA/lo_LA';
+    'lt_LT': Result := 'lt_LT/lt';
+    'lt': Result := 'lt_LT/lt';
+    'lv_LV': Result := 'lv_LV/lv_LV';
+    'mn_MN': Result := 'mn_MN/mn_MN';
+    'mr_IN': Result := 'mr_IN/mr_IN';
+    'ne_NP': Result := 'ne_NP/ne_NP';
+    'nl_NL': Result := 'nl_NL/nl_NL';
+    'no': Result := 'no/nb_NO';
+    'nb_NO': Result := 'no/nb_NO';
+    'nn_NO': Result := 'no/nn_NO';
+    'oc_FR': Result := 'oc_FR/oc_FR';
+    'or_IN': Result := 'or_IN/or_IN';
+    'pa_IN': Result := 'pa_IN/pa_IN';
+    'pl_PL': Result := 'pl_PL/pl_PL';
+    'pt_BR': Result := 'pt_BR/pt_BR';
+    'pt_PT': Result := 'pt_PT/pt_PT';
+    'pt': Result := 'pt_BR/pt_BR'; // default to Brazilian if only 'pt'
+    'ro': Result := 'ro/ro_RO';
+    'ro_RO': Result := 'ro/ro_RO';
+    'ru_RU': Result := 'ru_RU/ru_RU';
+    'sa_IN': Result := 'sa_IN/sa_IN';
+    'si_LK': Result := 'si_LK/si_LK';
+    'sk_SK': Result := 'sk_SK/sk_SK';
+    'sl_SI': Result := 'sl_SI/sl_SI';
+    'sq_AL': Result := 'sq_AL/sq_AL';
+    'sr': Result := 'sr/sr';
+    'sr_Latn': Result := 'sr/sr-Latn';
+    'sr-Latn': Result := 'sr/sr-Latn';
+    'sv_SE': Result := 'sv_SE/dictionaries/sv_SE';
+    'sv_FI': Result := 'sv_SE/dictionaries/sv_FI';
+    'sw_TZ': Result := 'sw_TZ/sw_TZ';
+    'ta_IN': Result := 'ta_IN/ta_IN';
+    'te_IN': Result := 'te_IN/te_IN';
+    'th_TH': Result := 'th_TH/th_TH';
+    'tr_TR': Result := 'tr_TR/tr_TR';
+    'uk_UA': Result := 'uk_UA/uk_UA';
+    'vi': Result := 'vi/vi_VN';
+    'vi_VN': Result := 'vi/vi_VN';
+    else
+      Result := '';
+  end;
+end;
+
+procedure TSpellChecker.OnDictionaryDownloadComplete(Sender: TObject; AStreams: array of TMemoryStream; AErrors: array of string);
+var
+  affFileName, dicFileName: string;
+  basePath: string;
+begin
+  FDownloading := False;
+
+  // Ignore if component is being destroyed or language changed during download
+  if FDestroying or (FDownloadLang <> FLanguage) then Exit;
+
+  // Check if we got both streams without errors
+  if (Length(AStreams) < 2) or (Length(AErrors) < 2) then Exit;
+  if (AErrors[0] <> '') or (AErrors[1] <> '') then Exit;
+  if (AStreams[0] = nil) or (AStreams[1] = nil) then Exit;
+  if (AStreams[0].Size = 0) or (AStreams[1].Size = 0) then Exit;
+
+  // Load dictionary from streams
+  LoadHunDictionaryFromStream(AStreams[0], AStreams[1]);
+
+  // Attempt to cache to DicPath
+  if FHunDictionaryLoaded and (FDicPath <> '') then
+  begin
+    basePath := FDicPath;
+    if not IsPathAbsolute(basePath) then
+      basePath := ExtractFilePath(ParamStr(0)) + basePath;
+    basePath := IncludeTrailingPathDelimiter(basePath);
+
+    // Ensure directory exists
+    if ForceDirectories(basePath) then
+    begin
+      affFileName := basePath + FDownloadCandidate + '.aff';
+      dicFileName := basePath + FDownloadCandidate + '.dic';
+      try
+        AStreams[0].SaveToFile(affFileName);
+        AStreams[1].SaveToFile(dicFileName);
+      except
+        // Ignore save errors
+      end;
+    end;
+  end;
+
+  // If dictionary loaded, CheckNow will be called inside LoadHunDictionaryFromStream,
+  // but we also call it here to be safe (it will be skipped if already checking)
+  if FHunDictionaryLoaded and FEnabled and Assigned(FRichMemo) then
+    CheckNow;
 end;
 
 function TSpellChecker.TryLoadHunDictionary(const AffFile, DicFile: string): boolean;
