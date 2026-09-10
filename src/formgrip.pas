@@ -11,484 +11,581 @@ unit FormGrip;
 interface
 
 uses
-  Classes, SysUtils, Controls, Forms, Graphics, LCLIntf, LCLType, Types;
+  Classes, SysUtils, Controls, Forms, Graphics, LCLIntf, LCLType, LMessages, Types;
 
 type
   // Style of grip drawing
   TGripStyle = (gsDots, gsLines, gsGrid, gsSolid);
 
-  // Non-visual component that paints a size grip in the bottom-right corner
-  // of the owner form and allows resizing the form by dragging that grip.
-  TFormGrip = class(TComponent)
+  // Corner of the parent where the grip is placed
+  TGripCorner = (gcBottomRight, gcBottomLeft, gcTopRight, gcTopLeft);
+
+  // Base class for a size grip control. Draws a grip in the selected
+  // corner of its parent and resizes the parent by dragging that grip.
+  TCustomFormGrip = class(TCustomControl)
   private
-    FEnabled: boolean;
-    FActive: boolean;
     FShowGrip: boolean;
-    FGripSize: integer;
+    FGripCorner: TGripCorner;
     FGripMargin: integer;
     FGripColor: TColor;
     FDotSize: integer;
     FDotSpacing: integer;
     FGripStyle: TGripStyle;
-    FMinFormWidth: integer;
-    FMinFormHeight: integer;
-
-    FOldOnPaint: TNotifyEvent;
-    FOldOnMouseDown: TMouseEvent;
-    FOldOnMouseMove: TMouseMoveEvent;
-    FOldOnMouseUp: TMouseEvent;
-    FOldOnResize: TNotifyEvent;
-    FOldOnDestroy: TNotifyEvent;
-
-    FForm: TForm;
+    FMinParentWidth: integer;
+    FMinParentHeight: integer;
     FDragging: boolean;
-    FStartPoint: TPoint;
+    FUpdating: boolean;
+    FStartMouse: TPoint;
     FStartWidth: integer;
     FStartHeight: integer;
-    FPrevCursor: TCursor;
-    FPrevComposited: boolean;
+    FStartParentLeft: integer;
+    FStartParentTop: integer;
 
-    procedure SetEnabled(Value: boolean);
-    procedure SetActive(Value: boolean);
     procedure SetShowGrip(Value: boolean);
-    procedure SetGripSize(Value: integer);
+    procedure SetGripCorner(Value: TGripCorner);
     procedure SetGripMargin(Value: integer);
     procedure SetGripColor(Value: TColor);
     procedure SetDotSize(Value: integer);
     procedure SetDotSpacing(Value: integer);
     procedure SetGripStyle(Value: TGripStyle);
-    procedure SetMinFormWidth(Value: integer);
-    procedure SetMinFormHeight(Value: integer);
+    procedure SetMinParentWidth(Value: integer);
+    procedure SetMinParentHeight(Value: integer);
 
-    procedure HookForm;
-    procedure UnhookForm;
-    procedure FormPaint(Sender: TObject);
-    procedure FormMouseDown(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: integer);
-    procedure FormMouseMove(Sender: TObject; Shift: TShiftState; X, Y: integer);
-    procedure FormMouseUp(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: integer);
-    procedure FormResize(Sender: TObject);
-    procedure FormDestroy(Sender: TObject);
-
-    function IsInGripArea(X, Y: integer): boolean;
-    procedure DrawGrip(Canvas: TCanvas);
+    procedure UpdatePosition;
+    procedure DrawGrip;
+    procedure DrawDots;
+    procedure DrawLines;
+    procedure DrawGrid;
+    procedure DrawSolid;
   protected
     procedure Loaded; override;
-    procedure Notification(AComponent: TComponent; Operation: TOperation); override;
-  public
-    constructor Create(AOwner: TComponent); override;
-    destructor Destroy; override;
-  published
-    property Enabled: boolean read FEnabled write SetEnabled default True;
-    property Active: boolean read FActive write SetActive default True;
+    procedure SetParent(NewParent: TWinControl); override;
+    procedure Paint; override;
+    procedure MouseDown(Button: TMouseButton; Shift: TShiftState; X, Y: integer); override;
+    procedure MouseMove(Shift: TShiftState; X, Y: integer); override;
+    procedure MouseUp(Button: TMouseButton; Shift: TShiftState; X, Y: integer); override;
+    procedure WMEraseBkgnd(var Message: TLMEraseBkgnd); message LM_ERASEBKGND;
+
     property ShowGrip: boolean read FShowGrip write SetShowGrip default True;
-    property GripSize: integer read FGripSize write SetGripSize default 10;
+    property GripCorner: TGripCorner read FGripCorner write SetGripCorner default gcBottomRight;
     property GripMargin: integer read FGripMargin write SetGripMargin default 2;
     property GripColor: TColor read FGripColor write SetGripColor default clActiveBorder;
     property GripStyle: TGripStyle read FGripStyle write SetGripStyle default gsDots;
     property DotSize: integer read FDotSize write SetDotSize default 2;
     property DotSpacing: integer read FDotSpacing write SetDotSpacing default 3;
-    property MinFormWidth: integer read FMinFormWidth write SetMinFormWidth default 100;
-    property MinFormHeight: integer read FMinFormHeight write SetMinFormHeight default 100;
+    property MinParentWidth: integer read FMinParentWidth write SetMinParentWidth default 100;
+    property MinParentHeight: integer read FMinParentHeight write SetMinParentHeight default 100;
+  public
+    constructor Create(AOwner: TComponent); override;
+    procedure SetBounds(ALeft, ATop, AWidth, AHeight: integer); override;
+  end;
+
+  // Published size grip component ready to be placed on a form or panel.
+  TFormGrip = class(TCustomFormGrip)
+  published
+    property ShowGrip;
+    property GripCorner;
+    property GripMargin;
+    property GripColor;
+    property GripStyle;
+    property DotSize;
+    property DotSpacing;
+    property MinParentWidth;
+    property MinParentHeight;
+    property Anchors;
+    property Color;
+    property ParentColor;
+    property Cursor;
+    property Height;
+    property Width;
+    property Visible;
   end;
 
 implementation
 
-uses controlshelper;
-
-constructor TFormGrip.Create(AOwner: TComponent);
+constructor TCustomFormGrip.Create(AOwner: TComponent);
 begin
   inherited Create(AOwner);
-  FEnabled := True;
-  FActive := True;
   FShowGrip := True;
-  FGripSize := 10;
+  FGripCorner := gcBottomRight;
   FGripMargin := 2;
   FGripColor := clActiveBorder;
   FGripStyle := gsDots;
   FDotSize := 2;
   FDotSpacing := 3;
-  FMinFormWidth := 100;
-  FMinFormHeight := 100;
+  FMinParentWidth := 100;
+  FMinParentHeight := 100;
   FDragging := False;
-  FPrevCursor := crDefault;
-  FPrevComposited := False;
+  FUpdating := False;
+  FStartMouse := Point(0, 0);
+  FStartWidth := 0;
+  FStartHeight := 0;
+  FStartParentLeft := 0;
+  FStartParentTop := 0;
 
-  if (Owner is TForm) and not (csLoading in Owner.ComponentState) then
-    HookForm;
+  Width := 16;
+  Height := 16;
+  ParentColor := True;
+  Color := clBtnFace;
+
+  // Paint the whole area ourselves, no parent erase, no flicker
+  ControlStyle := ControlStyle + [csOpaque];
+  DoubleBuffered := True;
+
+  UpdatePosition;
 end;
 
-destructor TFormGrip.Destroy;
-begin
-  UnhookForm;
-  inherited Destroy;
-end;
-
-procedure TFormGrip.Loaded;
+procedure TCustomFormGrip.Loaded;
 begin
   inherited Loaded;
-  if FEnabled and (Owner is TForm) then
-    HookForm;
+  UpdatePosition;
 end;
 
-procedure TFormGrip.Notification(AComponent: TComponent; Operation: TOperation);
+procedure TCustomFormGrip.SetParent(NewParent: TWinControl);
 begin
-  inherited Notification(AComponent, Operation);
-  if (Operation = opRemove) and (AComponent = FForm) then
-    UnhookForm;
-end;
-
-procedure TFormGrip.SetEnabled(Value: boolean);
-begin
-  if FEnabled <> Value then
+  inherited SetParent(NewParent);
+  if not (csLoading in ComponentState) then
   begin
-    FEnabled := Value;
-    if FEnabled then
-    begin
-      if Owner is TForm then
-        HookForm;
-    end
-    else
-      UnhookForm;
+    UpdatePosition;
+    if (NewParent <> nil) and not (csDesigning in ComponentState) then
+      BringToFront;
   end;
 end;
 
-procedure TFormGrip.SetActive(Value: boolean);
+procedure TCustomFormGrip.SetBounds(ALeft, ATop, AWidth, AHeight: integer);
 begin
-  if FActive <> Value then
+  if FUpdating or (Parent = nil) or (csLoading in ComponentState) then
   begin
-    FActive := Value;
-    if FForm <> nil then
-      FForm.Invalidate;
+    inherited SetBounds(ALeft, ATop, AWidth, AHeight);
+    Exit;
+  end;
+
+  // Honor the requested size, then force the position back to the corner
+  FUpdating := True;
+  try
+    inherited SetBounds(ALeft, ATop, AWidth, AHeight);
+  finally
+    FUpdating := False;
+  end;
+  UpdatePosition;
+end;
+
+procedure TCustomFormGrip.WMEraseBkgnd(var Message: TLMEraseBkgnd);
+begin
+  // Background is fully painted in Paint, no need to erase it here
+  Message.Result := 1;
+end;
+
+procedure TCustomFormGrip.UpdatePosition;
+var
+  NewAnchors: TAnchors;
+  NewLeft, NewTop: integer;
+  NewCursor: TCursor;
+begin
+  if FUpdating then
+    Exit;
+  if Parent = nil then
+    Exit;
+
+  FUpdating := True;
+  try
+    case FGripCorner of
+      gcBottomRight:
+      begin
+        NewLeft := Parent.ClientWidth - Width;
+        NewTop := Parent.ClientHeight - Height;
+        NewCursor := crSizeNWSE;
+        NewAnchors := [akRight, akBottom];
+      end;
+      gcBottomLeft:
+      begin
+        NewLeft := 0;
+        NewTop := Parent.ClientHeight - Height;
+        NewCursor := crSizeNESW;
+        NewAnchors := [akLeft, akBottom];
+      end;
+      gcTopRight:
+      begin
+        NewLeft := Parent.ClientWidth - Width;
+        NewTop := 0;
+        NewCursor := crSizeNESW;
+        NewAnchors := [akRight, akTop];
+      end;
+      gcTopLeft:
+      begin
+        NewLeft := 0;
+        NewTop := 0;
+        NewCursor := crSizeNWSE;
+        NewAnchors := [akLeft, akTop];
+      end;
+    end;
+
+    if NewLeft < 0 then
+      NewLeft := 0;
+    if NewTop < 0 then
+      NewTop := 0;
+
+    Anchors := NewAnchors;
+    Cursor := NewCursor;
+    SetBounds(NewLeft, NewTop, Width, Height);
+  finally
+    FUpdating := False;
   end;
 end;
 
-procedure TFormGrip.SetShowGrip(Value: boolean);
+procedure TCustomFormGrip.SetShowGrip(Value: boolean);
 begin
   if FShowGrip <> Value then
   begin
     FShowGrip := Value;
-    if FForm <> nil then
-      FForm.Invalidate;
+    Invalidate;
   end;
 end;
 
-procedure TFormGrip.SetGripSize(Value: integer);
+procedure TCustomFormGrip.SetGripCorner(Value: TGripCorner);
 begin
-  if FGripSize <> Value then
+  if FGripCorner <> Value then
   begin
-    FGripSize := Value;
-    if FGripSize < 8 then
-      FGripSize := 8;
-    if FForm <> nil then
-      FForm.Invalidate;
+    FGripCorner := Value;
+    UpdatePosition;
+    Invalidate;
   end;
 end;
 
-procedure TFormGrip.SetGripMargin(Value: integer);
+procedure TCustomFormGrip.SetGripMargin(Value: integer);
 begin
+  if Value < 0 then
+    Value := 0;
   if FGripMargin <> Value then
   begin
     FGripMargin := Value;
-    if FGripMargin < 0 then
-      FGripMargin := 0;
-    if FForm <> nil then
-      FForm.Invalidate;
+    Invalidate;
   end;
 end;
 
-procedure TFormGrip.SetGripColor(Value: TColor);
+procedure TCustomFormGrip.SetGripColor(Value: TColor);
 begin
   if FGripColor <> Value then
   begin
     FGripColor := Value;
-    if FForm <> nil then
-      FForm.Invalidate;
+    Invalidate;
   end;
 end;
 
-procedure TFormGrip.SetDotSize(Value: integer);
+procedure TCustomFormGrip.SetDotSize(Value: integer);
 begin
+  if Value < 1 then
+    Value := 1;
   if FDotSize <> Value then
   begin
     FDotSize := Value;
-    if FDotSize < 1 then
-      FDotSize := 1;
-    if FForm <> nil then
-      FForm.Invalidate;
+    Invalidate;
   end;
 end;
 
-procedure TFormGrip.SetDotSpacing(Value: integer);
+procedure TCustomFormGrip.SetDotSpacing(Value: integer);
 begin
+  if Value < 2 then
+    Value := 2;
   if FDotSpacing <> Value then
   begin
     FDotSpacing := Value;
-    if FDotSpacing < 2 then
-      FDotSpacing := 2;
-    if FForm <> nil then
-      FForm.Invalidate;
+    Invalidate;
   end;
 end;
 
-procedure TFormGrip.SetGripStyle(Value: TGripStyle);
+procedure TCustomFormGrip.SetGripStyle(Value: TGripStyle);
 begin
   if FGripStyle <> Value then
   begin
     FGripStyle := Value;
-    if FForm <> nil then
-      FForm.Invalidate;
+    Invalidate;
   end;
 end;
 
-procedure TFormGrip.SetMinFormWidth(Value: integer);
+procedure TCustomFormGrip.SetMinParentWidth(Value: integer);
 begin
-  if FMinFormWidth <> Value then
-  begin
-    FMinFormWidth := Value;
-    if FMinFormWidth < 1 then
-      FMinFormWidth := 1;
-  end;
+  if Value < 1 then
+    Value := 1;
+  FMinParentWidth := Value;
 end;
 
-procedure TFormGrip.SetMinFormHeight(Value: integer);
+procedure TCustomFormGrip.SetMinParentHeight(Value: integer);
 begin
-  if FMinFormHeight <> Value then
-  begin
-    FMinFormHeight := Value;
-    if FMinFormHeight < 1 then
-      FMinFormHeight := 1;
-  end;
+  if Value < 1 then
+    Value := 1;
+  FMinParentHeight := Value;
 end;
 
-procedure TFormGrip.HookForm;
-begin
-  if FForm <> nil then
-    UnhookForm;
-  if Owner is TForm then
-  begin
-    FForm := TForm(Owner);
-    // Save original event handlers
-    FOldOnPaint := FForm.OnPaint;
-    FOldOnMouseDown := FForm.OnMouseDown;
-    FOldOnMouseMove := FForm.OnMouseMove;
-    FOldOnMouseUp := FForm.OnMouseUp;
-    FOldOnResize := FForm.OnResize;
-    FOldOnDestroy := FForm.OnDestroy;
-    // Install our handlers
-    FForm.OnPaint := @FormPaint;
-    FForm.OnMouseDown := @FormMouseDown;
-    FForm.OnMouseMove := @FormMouseMove;
-    FForm.OnMouseUp := @FormMouseUp;
-    FForm.OnResize := @FormResize;
-    FForm.OnDestroy := @FormDestroy;
-    FForm.Invalidate;
-  end;
-end;
-
-procedure TFormGrip.UnhookForm;
-begin
-  if FForm <> nil then
-  begin
-    // Restore original event handlers
-    FForm.OnPaint := FOldOnPaint;
-    FForm.OnMouseDown := FOldOnMouseDown;
-    FForm.OnMouseMove := FOldOnMouseMove;
-    FForm.OnMouseUp := FOldOnMouseUp;
-    FForm.OnResize := FOldOnResize;
-    FForm.OnDestroy := FOldOnDestroy;
-    FForm := nil;
-  end;
-end;
-
-function TFormGrip.IsInGripArea(X, Y: integer): boolean;
-begin
-  if FForm = nil then
-    Exit(False);
-  Result := (X >= FForm.ClientWidth - FGripSize - FGripMargin) and (Y >= FForm.ClientHeight - FGripSize - FGripMargin);
-end;
-
-procedure TFormGrip.DrawGrip(Canvas: TCanvas);
+procedure TCustomFormGrip.DrawDots;
 var
   i, j: integer;
   x, y: integer;
   Count: integer;
-  Right, Bottom: integer;
+  W, H, L, R, T, B: integer;
 begin
-  if FForm = nil then
+  L := FGripMargin;
+  T := FGripMargin;
+  R := ClientWidth - FGripMargin;
+  B := ClientHeight - FGripMargin;
+  W := R - L;
+  H := B - T;
+  if (W < FDotSize) or (H < FDotSize) then
     Exit;
+
+  Count := (W - FDotSize) div FDotSpacing + 1;
+  if ((H - FDotSize) div FDotSpacing + 1) < Count then
+    Count := (H - FDotSize) div FDotSpacing + 1;
+  if Count < 1 then
+    Exit;
+
+  for i := 0 to Count - 1 do
+  begin
+    case FGripCorner of
+      gcBottomRight:
+      begin
+        y := B - FDotSize - i * FDotSpacing;
+        for j := 0 to (Count - 1 - i) do
+        begin
+          x := R - FDotSize - j * FDotSpacing;
+          Canvas.Rectangle(x, y, x + FDotSize, y + FDotSize);
+        end;
+      end;
+      gcBottomLeft:
+      begin
+        y := B - FDotSize - i * FDotSpacing;
+        for j := 0 to (Count - 1 - i) do
+        begin
+          x := L + j * FDotSpacing;
+          Canvas.Rectangle(x, y, x + FDotSize, y + FDotSize);
+        end;
+      end;
+      gcTopRight:
+      begin
+        y := T + i * FDotSpacing;
+        for j := 0 to (Count - 1 - i) do
+        begin
+          x := R - FDotSize - j * FDotSpacing;
+          Canvas.Rectangle(x, y, x + FDotSize, y + FDotSize);
+        end;
+      end;
+      gcTopLeft:
+      begin
+        y := T + i * FDotSpacing;
+        for j := 0 to (Count - 1 - i) do
+        begin
+          x := L + j * FDotSpacing;
+          Canvas.Rectangle(x, y, x + FDotSize, y + FDotSize);
+        end;
+      end;
+    end;
+  end;
+end;
+
+procedure TCustomFormGrip.DrawLines;
+var
+  i, d, L2: integer;
+  Count: integer;
+  W, H, Lft, R, T, B: integer;
+begin
+  L2 := 3;
+  Lft := FGripMargin;
+  T := FGripMargin;
+  R := ClientWidth - FGripMargin;
+  B := ClientHeight - FGripMargin;
+  W := R - Lft;
+  H := B - T;
+
+  Count := W div L2;
+  if (H div L2) < Count then
+    Count := H div L2;
+  if Count < 1 then
+    Exit;
+
+  for i := 0 to Count - 1 do
+  begin
+    d := (i + 1) * L2;
+    case FGripCorner of
+      gcBottomRight:
+        Canvas.Line(R - d, B, R, B - d);
+      gcBottomLeft:
+        Canvas.Line(Lft + d, B, Lft, B - d);
+      gcTopRight:
+        Canvas.Line(R - d, T, R, T + d);
+      gcTopLeft:
+        Canvas.Line(Lft + d, T, Lft, T + d);
+    end;
+  end;
+end;
+
+procedure TCustomFormGrip.DrawGrid;
+var
+  x, y: integer;
+  Lft, T, R, B: integer;
+begin
+  Lft := FGripMargin;
+  T := FGripMargin;
+  R := ClientWidth - FGripMargin;
+  B := ClientHeight - FGripMargin;
+
+  y := T;
+  while y + FDotSize <= B do
+  begin
+    x := Lft;
+    while x + FDotSize <= R do
+    begin
+      Canvas.Rectangle(x, y, x + FDotSize, y + FDotSize);
+      Inc(x, FDotSpacing);
+    end;
+    Inc(y, FDotSpacing);
+  end;
+end;
+
+procedure TCustomFormGrip.DrawSolid;
+var
+  Lft, T, R, B: integer;
+begin
+  Lft := FGripMargin;
+  T := FGripMargin;
+  R := ClientWidth - FGripMargin;
+  B := ClientHeight - FGripMargin;
+
+  Canvas.Pen.Style := psClear;
+  case FGripCorner of
+    gcBottomRight:
+      Canvas.Polygon([Point(R, T), Point(R, B), Point(Lft, B)]);
+    gcBottomLeft:
+      Canvas.Polygon([Point(Lft, T), Point(R, B), Point(Lft, B)]);
+    gcTopRight:
+      Canvas.Polygon([Point(R, T), Point(R, B), Point(Lft, T)]);
+    gcTopLeft:
+      Canvas.Polygon([Point(Lft, T), Point(R, T), Point(Lft, B)]);
+  end;
+  Canvas.Pen.Style := psSolid;
+end;
+
+procedure TCustomFormGrip.DrawGrip;
+begin
   Canvas.Pen.Color := FGripColor;
   Canvas.Brush.Color := FGripColor;
-
-  // Right and bottom bounds of the grip area (excluding margin)
-  Right := FForm.ClientWidth - FGripMargin;
-  Bottom := FForm.ClientHeight - FGripMargin;
+  Canvas.Brush.Style := bsSolid;
+  Canvas.Pen.Style := psSolid;
+  Canvas.Pen.Width := 1;
 
   case FGripStyle of
-    gsDots:
-    begin
-      // Draw a triangular arrangement of dots from the bottom-right corner
-      Count := (FGripSize - FDotSize) div FDotSpacing + 1;
-      for i := 0 to Count - 1 do
-      begin
-        y := Bottom - FDotSize - i * FDotSpacing;
-        for j := 0 to (Count - i - 1) do
-        begin
-          x := Right - FDotSize - j * FDotSpacing;
-          Canvas.Rectangle(x, y, x + FDotSize, y + FDotSize);
-        end;
-      end;
-    end;
-
-    gsLines:
-        begin
-          // Draw several diagonal lines within the grip area
-          Canvas.Pen.Width := 1;
-          Count := (GripSize div 3) + 1;
-          for i := 0 to Count - 1 do
-          begin
-            x := i * 3;
-            if x > GripSize then
-              Break;
-            Canvas.Line(Right - x, Bottom,
-              Right, Bottom - x);
-          end;
-        end;
-
-    gsGrid:
-    begin
-      // Draw a grid of dots
-      for i := 0 to (FGripSize - FDotSize) div FDotSpacing do
-        for j := 0 to (FGripSize - FDotSize) div FDotSpacing do
-        begin
-          x := Right - FGripSize + j * FDotSpacing;
-          y := Bottom - FGripSize + i * FDotSpacing;
-          Canvas.Rectangle(x, y, x + FDotSize, y + FDotSize);
-        end;
-    end;
-
-    gsSolid:
-    begin
-      // Draw solid triangle
-      Canvas.Pen.Style := psClear;
-      Canvas.Polygon([Point(Right, Bottom - FGripSize), Point(Right, Bottom), Point(Right - FGripSize, Bottom)]);
-      Canvas.Pen.Style := psSolid;
-    end;
+    gsDots: DrawDots;
+    gsLines: DrawLines;
+    gsGrid: DrawGrid;
+    gsSolid: DrawSolid;
   end;
 end;
 
-procedure TFormGrip.FormPaint(Sender: TObject);
+procedure TCustomFormGrip.Paint;
+var
+  bg: TColor;
 begin
-  if FEnabled and FShowGrip and (FForm <> nil) then
-    DrawGrip(FForm.Canvas);
-  // Call original handler if assigned
-  if Assigned(FOldOnPaint) then
-    FOldOnPaint(Sender);
+  if ParentColor and (Parent <> nil) then
+    bg := Parent.Color
+  else
+    bg := Color;
+
+  Canvas.Brush.Color := bg;
+  Canvas.Brush.Style := bsSolid;
+  Canvas.FillRect(ClientRect);
+
+  if FShowGrip then
+    DrawGrip;
 end;
 
-procedure TFormGrip.FormMouseDown(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: integer);
+procedure TCustomFormGrip.MouseDown(Button: TMouseButton; Shift: TShiftState; X, Y: integer);
 begin
+  inherited MouseDown(Button, Shift, X, Y);
   if csDesigning in ComponentState then
-  begin
-    // In design-time just call original handler and do nothing
-    if Assigned(FOldOnMouseDown) then
-      FOldOnMouseDown(Sender, Button, Shift, X, Y);
     Exit;
-  end;
-
-  if FEnabled and FActive and FShowGrip and (Button = mbLeft) and IsInGripArea(X, Y) then
+  if (Button = mbLeft) and (Parent <> nil) then
   begin
     FDragging := True;
-    FStartPoint := Point(X, Y);
-    FStartWidth := FForm.Width;
-    FStartHeight := FForm.Height;
-    // Save and enable double buffering to reduce flicker
-    FPrevComposited := FForm.Composited;
-    FForm.Composited := True;
-    SetCapture(FForm.Handle);
+    FStartMouse := Mouse.CursorPos;
+    FStartWidth := Parent.Width;
+    FStartHeight := Parent.Height;
+    FStartParentLeft := Parent.Left;
+    FStartParentTop := Parent.Top;
+    BringToFront;
+    SetCapture(Handle);
   end;
-  // Call original handler if assigned
-  if Assigned(FOldOnMouseDown) then
-    FOldOnMouseDown(Sender, Button, Shift, X, Y);
 end;
 
-procedure TFormGrip.FormMouseMove(Sender: TObject; Shift: TShiftState; X, Y: integer);
+procedure TCustomFormGrip.MouseMove(Shift: TShiftState; X, Y: integer);
 var
+  P: TPoint;
+  dx, dy: integer;
   NewWidth, NewHeight: integer;
+  NewLeft, NewTop: integer;
 begin
-  if csDesigning in ComponentState then
-  begin
-    // In design-time just call original handler and do nothing
-    if Assigned(FOldOnMouseMove) then
-      FOldOnMouseMove(Sender, Shift, X, Y);
+  inherited MouseMove(Shift, X, Y);
+  if not FDragging or (Parent = nil) then
     Exit;
-  end;
+  P := Mouse.CursorPos;
+  dx := P.X - FStartMouse.X;
+  dy := P.Y - FStartMouse.Y;
 
-  if FEnabled and FActive and FShowGrip and (FForm <> nil) then
-  begin
-    if FDragging then
+  NewWidth := FStartWidth;
+  NewHeight := FStartHeight;
+  NewLeft := FStartParentLeft;
+  NewTop := FStartParentTop;
+
+  case FGripCorner of
+    gcBottomRight:
     begin
-      NewWidth := FStartWidth + (X - FStartPoint.X);
-      NewHeight := FStartHeight + (Y - FStartPoint.Y);
-      if NewWidth < FMinFormWidth then
-        NewWidth := FMinFormWidth;
-      if NewHeight < FMinFormHeight then
-        NewHeight := FMinFormHeight;
-      // Use SetBounds for atomic size change, reduces flicker
-      FForm.SetBounds(FForm.Left, FForm.Top, NewWidth, NewHeight);
-    end
-    else if IsInGripArea(X, Y) then
+      NewWidth := FStartWidth + dx;
+      NewHeight := FStartHeight + dy;
+    end;
+    gcBottomLeft:
     begin
-      if FForm.Cursor <> crSizeNWSE then
-      begin
-        FPrevCursor := FForm.Cursor;
-        FForm.Cursor := crSizeNWSE;
-      end;
-    end
-    else if FForm.Cursor = crSizeNWSE then
+      NewWidth := FStartWidth - dx;
+      NewHeight := FStartHeight + dy;
+      NewLeft := FStartParentLeft + dx;
+    end;
+    gcTopRight:
     begin
-      FForm.Cursor := FPrevCursor;
+      NewWidth := FStartWidth + dx;
+      NewHeight := FStartHeight - dy;
+      NewTop := FStartParentTop + dy;
+    end;
+    gcTopLeft:
+    begin
+      NewWidth := FStartWidth - dx;
+      NewHeight := FStartHeight - dy;
+      NewLeft := FStartParentLeft + dx;
+      NewTop := FStartParentTop + dy;
     end;
   end;
-  // Call original handler if assigned
-  if Assigned(FOldOnMouseMove) then
-    FOldOnMouseMove(Sender, Shift, X, Y);
-end;
 
-procedure TFormGrip.FormMouseUp(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: integer);
-begin
-  if csDesigning in ComponentState then
+  if NewWidth < FMinParentWidth then
   begin
-    // In design-time just call original handler and do nothing
-    if Assigned(FOldOnMouseUp) then
-      FOldOnMouseUp(Sender, Button, Shift, X, Y);
-    Exit;
+    if (FGripCorner = gcBottomLeft) or (FGripCorner = gcTopLeft) then
+      NewLeft := FStartParentLeft + (FStartWidth - FMinParentWidth);
+    NewWidth := FMinParentWidth;
+  end;
+  if NewHeight < FMinParentHeight then
+  begin
+    if (FGripCorner = gcTopLeft) or (FGripCorner = gcTopRight) then
+      NewTop := FStartParentTop + (FStartHeight - FMinParentHeight);
+    NewHeight := FMinParentHeight;
   end;
 
+  Parent.SetBounds(NewLeft, NewTop, NewWidth, NewHeight);
+  Parent.Update;
+end;
+
+procedure TCustomFormGrip.MouseUp(Button: TMouseButton; Shift: TShiftState; X, Y: integer);
+begin
+  inherited MouseUp(Button, Shift, X, Y);
   if FDragging then
   begin
     FDragging := False;
-    // Restore previous double buffering state
-    FForm.Composited := FPrevComposited;
     ReleaseCapture;
   end;
-  // Call original handler if assigned
-  if Assigned(FOldOnMouseUp) then
-    FOldOnMouseUp(Sender, Button, Shift, X, Y);
-end;
-
-procedure TFormGrip.FormResize(Sender: TObject);
-begin
-  // Just call original handler if assigned
-  if Assigned(FOldOnResize) then
-    FOldOnResize(Sender);
-end;
-
-procedure TFormGrip.FormDestroy(Sender: TObject);
-begin
-  UnhookForm;
-  // Call original handler if assigned
-  if Assigned(FOldOnDestroy) then
-    FOldOnDestroy(Sender);
 end;
 
 end.

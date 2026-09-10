@@ -16,15 +16,13 @@ All components are installed on the **Common Controls** tab of the component pal
 
 ---
 
-## Components
-
-### TSpellChecker (Common Controls ![spellchecker](img/TSpellChecker.png))
+## TSpellChecker (Common Controls ![spellchecker](img/TSpellChecker.png))
 
 ![sample_spellchecker](img/sample_spellchecker.png)
 
 `TSpellChecker` is a non‑visual component that adds spell‑checking capabilities to a `TRichMemo` control. It supports both the native Windows Spell Checker (on Windows) and Hunspell (cross‑platform), with background checking, real‑time debounced updates, cancellation, and an automatic context menu with suggestions.
 
-#### Features
+### Features
 
 - Background spell checking with cancellation support.
 - Debounced real‑time checking (configurable delay).
@@ -35,7 +33,7 @@ All components are installed on the **Common Controls** tab of the component pal
 - For Hunspell: loads dictionaries from files, streams, or automatically downloads them from a URL (LibreOffice dictionaries repository).
 - Events: `OnSpellCheckComplete` (reports error count), `OnContextPopup` (allows custom handling).
 
-#### Key Properties
+### Key Properties
 
 | Property               | Default        | Description |
 |------------------------|----------------|-------------|
@@ -56,14 +54,14 @@ All components are installed on the **Common Controls** tab of the component pal
 | `DicPath`              | `''`           | Directory for Hunspell dictionaries (absolute or relative to the application). |
 | `DicUrl`               | `'https://raw.githubusercontent.com/LibreOffice/dictionaries/master/{libredict}'` | URL template for downloading dictionaries. Placeholders: `{dict}` (language code + .aff/.dic) or `{libredict}` (LibreOffice internal path). |
 
-#### Events
+### Events
 
 | Event                    | Description |
 |--------------------------|-------------|
 | `OnSpellCheckComplete`   | Fired after a check finishes (and after underlines are applied, if `AutoApply` is `True`). Provides the number of errors found. |
 | `OnContextPopup`         | Called before the component’s built‑in context menu handling. Set `Handled` to `True` to prevent the component from showing its menu. |
 
-#### Usage
+### Usage
 
 1. Place a `TSpellChecker` on a form.
 2. Assign its `RichMemo` property to a `TRichMemo` control.
@@ -96,40 +94,62 @@ Spell.PopupMenu := MyPopupMenu;
 Spell.SubMenu := False; // suggestions appear directly in the menu
 Spell.SubMenuIndex := 2; // insert after the second item
 ```
+
 ---
 
-### TFormGrip (Common Controls ![formgrip](img/TFormGrip.png))
+## TFormGrip (Common Controls ![formgrip](img/TFormGrip.png))
 
-`TFormGrip` is a non‑visual component that paints a size grip in the bottom‑right corner of its owner form. It allows the user to resize the form by dragging the grip, similar to the grip found in a `StatusBar`.
+`TFormGrip` is a visual control that draws a size grip in a selected corner
+of its parent (a form or a panel) and resizes that parent when the grip is
+dragged. It behaves like the grip found in a `StatusBar`, but can be placed
+in any corner and styled freely.
 
-#### Features
+The component does not hook or override any events of its parent. All mouse
+handling, painting, and resizing are performed inside the control itself, so
+the parent form's own `OnPaint`, `OnMouseDown`, `OnMouseMove`, `OnMouseUp`,
+and `OnResize` handlers remain untouched.
 
-- Automatically hooks into the owner form’s events for painting and mouse handling.
-- Works at runtime; in design time it only draws the grip but does not interfere with the form designer.
-- Multiple grip drawing styles: dots (triangular arrangement), lines, grid, or solid triangle.
-- Customizable size, margin, colour, dot size, spacing, and minimum form dimensions.
+### Features
 
-#### Key Properties
+- Works with any `TWinControl` parent, not only with forms.
+- Grip can be placed in any of the four corners of the parent.
+- The control automatically snaps to the chosen corner and cannot be moved
+  away from it; resizing or repositioning the parent keeps the grip in place.
+- Multiple grip drawing styles: dots (triangular arrangement), lines, grid,
+  or solid triangle.
+- Background can either follow the parent colour (`ParentColor = True`) or
+  use its own `Color`.
+- Resizing respects configurable minimum parent width and height.
+- Double buffered painting with `csOpaque`, so the grip redraws cleanly
+  during parent resize without flicker or black artefacts.
+- In design time the grip is drawn but does not resize the parent.
 
-| Property        | Default        | Description |
-|-----------------|----------------|-------------|
-| `Enabled`       | `True`         | Enables or disables the component. |
-| `Active`        | `True`         | Allows resizing when `True`; when `False` the grip is drawn but not interactive. |
-| `ShowGrip`      | `True`         | Controls visibility of the grip. |
-| `GripSize`      | `10`           | Size of the grip area in pixels. |
-| `GripMargin`    | `2`            | Offset from the right and bottom edges of the form. |
-| `GripColor`     | `clActiveBorder` | Colour used to draw the grip. |
-| `GripStyle`     | `gsDots`       | Drawing style: `gsDots`, `gsLines`, `gsGrid`, or `gsSolid`. |
-| `DotSize`       | `2`            | Diameter of the dots (for `gsDots` and `gsGrid`). |
-| `DotSpacing`    | `3`            | Distance between dots. |
-| `MinFormWidth`  | `100`          | Minimum width allowed during resizing. |
-| `MinFormHeight` | `100`          | Minimum height allowed during resizing. |
+### Key Properties
 
-#### Usage
+| Property          | Default          | Description |
+|-------------------|------------------|-------------|
+| `Visible`         | `True`           | Shows or hides the grip. |
+| `ShowGrip`        | `True`           | Controls drawing of the grip pattern. |
+| `GripCorner`      | `gcBottomRight`  | Corner of the parent: `gcBottomRight`, `gcBottomLeft`, `gcTopRight`, or `gcTopLeft`. |
+| `GripMargin`      | `2`              | Offset of the drawn pattern from the control edges (in pixels). |
+| `GripColor`       | `clActiveBorder` | Colour used to draw the grip pattern. |
+| `GripStyle`       | `gsDots`         | Drawing style: `gsDots`, `gsLines`, `gsGrid`, or `gsSolid`. |
+| `DotSize`         | `2`              | Size of the dots (for `gsDots` and `gsGrid`). |
+| `DotSpacing`      | `3`              | Distance between dots. |
+| `MinParentWidth`  | `100`            | Minimum parent width allowed during resizing. |
+| `MinParentHeight` | `100`            | Minimum parent height allowed during resizing. |
+| `ParentColor`     | `True`           | When `True`, background follows `Parent.Color`; otherwise uses `Color`. |
+| `Color`           | `clBtnFace`      | Background colour used when `ParentColor` is `False`. |
+| `Width`, `Height` | `16`, `16`       | Size of the grip control in pixels. |
 
-1. Drop a `TFormGrip` component onto a form from the **Common Controls** palette.
-2. Adjust the properties as needed in the Object Inspector.
-3. The grip will appear automatically in the bottom‑right corner of the form and allow resizing at runtime.
+### Usage
+
+1. Drop a `TFormGrip` component from the **Common Controls** palette onto a
+   form or a panel.
+2. Choose the desired corner using `GripCorner` and adjust the remaining
+   properties in the Object Inspector.
+3. At runtime the grip appears in the selected corner and resizes its parent
+   when dragged.
 
 Example code to create and configure `TFormGrip` at runtime:
 
@@ -137,21 +157,34 @@ Example code to create and configure `TFormGrip` at runtime:
 var
   Grip: TFormGrip;
 begin
-  Grip := TFormGrip.Create(Self); // Self is the form
+  Grip := TFormGrip.Create(Self); // Self is the parent control
+  Grip.Parent := Self;
+  Grip.GripCorner := gcBottomRight;
   Grip.GripStyle := gsLines;
   Grip.GripColor := clGray;
   Grip.GripMargin := 3;
-  Grip.Enabled := True;
+  Grip.Width := 16;
+  Grip.Height := 16;
 end;
 ```
 
+### Class hierarchy
+
+The component is split into two classes following the standard Lazarus
+convention:
+
+- `TCustomFormGrip` - base class that implements all behaviour. Inherit
+  from it to create custom variants with your own published properties.
+- `TFormGrip` - ready-to-use component that publishes the most useful
+  properties of `TCustomFormGrip` and of the inherited `TControl`.
+
 ---
 
-### TFlatButton (Common Controls ![flatbutton](img/TFlatButton.png))
+## TFlatButton (Common Controls ![flatbutton](img/TFlatButton.png))
 
 `TFlatButton` is a custom `TSpeedButton` descendant that always draws a flat, themed button (similar to toolbar buttons) and provides integrated tooltip support with extensive customisation.
 
-#### Features
+### Features
 
 - Always flat (inherited `Flat` property is hidden and forced to `True`).
 - Uses the native theme (via `ThemeServices`) for normal, hot, and pressed states.
@@ -160,7 +193,7 @@ end;
 - Built‑in tooltip system with delay, size, colour, and auto‑hide duration.
 - Tooltips are displayed using `TOneShotTooltip` and automatically hide when the button is clicked or the tooltip is dismissed.
 
-#### Key Properties
+### Key Properties
 
 | Property            | Default     | Description |
 |---------------------|-------------|-------------|
@@ -173,7 +206,7 @@ end;
 | `TooltipColor`      | `clDefault` | Background colour of the tooltip (`clDefault` uses system default). |
 | `TooltipDuration`   | `0`         | Time in milliseconds after which the tooltip auto‑hides (0 = no auto‑hide). |
 
-#### Usage
+### Usage
 
 Place a `TFlatButton` on a form, set an `Images` or `Glyph` for the icon, adjust `Caption`, and configure the tooltip properties.
 
