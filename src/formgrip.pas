@@ -27,6 +27,7 @@ type
     FShowGrip: boolean;
     FGripCorner: TGripCorner;
     FGripMargin: integer;
+    FGripPadding: integer;
     FGripColor: TColor;
     FDotSize: integer;
     FDotSpacing: integer;
@@ -44,6 +45,7 @@ type
     procedure SetShowGrip(Value: boolean);
     procedure SetGripCorner(Value: TGripCorner);
     procedure SetGripMargin(Value: integer);
+    procedure SetGripPadding(Value: integer);
     procedure SetGripColor(Value: TColor);
     procedure SetDotSize(Value: integer);
     procedure SetDotSpacing(Value: integer);
@@ -68,7 +70,8 @@ type
 
     property ShowGrip: boolean read FShowGrip write SetShowGrip default True;
     property GripCorner: TGripCorner read FGripCorner write SetGripCorner default gcBottomRight;
-    property GripMargin: integer read FGripMargin write SetGripMargin default 2;
+    property GripMargin: integer read FGripMargin write SetGripMargin default 0;
+    property GripPadding: integer read FGripPadding write SetGripPadding default 2;
     property GripColor: TColor read FGripColor write SetGripColor default clActiveBorder;
     property GripStyle: TGripStyle read FGripStyle write SetGripStyle default gsDots;
     property DotSize: integer read FDotSize write SetDotSize default 2;
@@ -86,6 +89,7 @@ type
     property ShowGrip;
     property GripCorner;
     property GripMargin;
+    property GripPadding;
     property GripColor;
     property GripStyle;
     property DotSize;
@@ -94,7 +98,7 @@ type
     property MinParentHeight;
     property Anchors;
     property Color;
-    property ParentColor;
+    property ParentColor default True;
     property Cursor;
     property Height;
     property Width;
@@ -108,7 +112,8 @@ begin
   inherited Create(AOwner);
   FShowGrip := True;
   FGripCorner := gcBottomRight;
-  FGripMargin := 2;
+  FGripMargin := 0;
+  FGripPadding := 2;
   FGripColor := clActiveBorder;
   FGripStyle := gsDots;
   FDotSize := 2;
@@ -125,8 +130,10 @@ begin
 
   Width := 16;
   Height := 16;
-  ParentColor := True;
+
+  // Set Color first, then ParentColor, because SetColor resets ParentColor
   Color := clBtnFace;
+  ParentColor := True;
 
   // Paint the whole area ourselves, no parent erase, no flicker
   ControlStyle := ControlStyle + [csOpaque];
@@ -192,29 +199,29 @@ begin
     case FGripCorner of
       gcBottomRight:
       begin
-        NewLeft := Parent.ClientWidth - Width;
-        NewTop := Parent.ClientHeight - Height;
+        NewLeft := Parent.ClientWidth - Width - FGripMargin;
+        NewTop := Parent.ClientHeight - Height - FGripMargin;
         NewCursor := crSizeNWSE;
         NewAnchors := [akRight, akBottom];
       end;
       gcBottomLeft:
       begin
-        NewLeft := 0;
-        NewTop := Parent.ClientHeight - Height;
+        NewLeft := FGripMargin;
+        NewTop := Parent.ClientHeight - Height - FGripMargin;
         NewCursor := crSizeNESW;
         NewAnchors := [akLeft, akBottom];
       end;
       gcTopRight:
       begin
-        NewLeft := Parent.ClientWidth - Width;
-        NewTop := 0;
+        NewLeft := Parent.ClientWidth - Width - FGripMargin;
+        NewTop := FGripMargin;
         NewCursor := crSizeNESW;
         NewAnchors := [akRight, akTop];
       end;
       gcTopLeft:
       begin
-        NewLeft := 0;
-        NewTop := 0;
+        NewLeft := FGripMargin;
+        NewTop := FGripMargin;
         NewCursor := crSizeNWSE;
         NewAnchors := [akLeft, akTop];
       end;
@@ -259,6 +266,17 @@ begin
   if FGripMargin <> Value then
   begin
     FGripMargin := Value;
+    UpdatePosition;
+  end;
+end;
+
+procedure TCustomFormGrip.SetGripPadding(Value: integer);
+begin
+  if Value < 0 then
+    Value := 0;
+  if FGripPadding <> Value then
+  begin
+    FGripPadding := Value;
     Invalidate;
   end;
 end;
@@ -324,10 +342,10 @@ var
   Count: integer;
   W, H, L, R, T, B: integer;
 begin
-  L := FGripMargin;
-  T := FGripMargin;
-  R := ClientWidth - FGripMargin;
-  B := ClientHeight - FGripMargin;
+  L := FGripPadding;
+  T := FGripPadding;
+  R := ClientWidth - FGripPadding;
+  B := ClientHeight - FGripPadding;
   W := R - L;
   H := B - T;
   if (W < FDotSize) or (H < FDotSize) then
@@ -389,10 +407,10 @@ var
   W, H, Lft, R, T, B: integer;
 begin
   L2 := 3;
-  Lft := FGripMargin;
-  T := FGripMargin;
-  R := ClientWidth - FGripMargin;
-  B := ClientHeight - FGripMargin;
+  Lft := FGripPadding;
+  T := FGripPadding;
+  R := ClientWidth - FGripPadding;
+  B := ClientHeight - FGripPadding;
   W := R - Lft;
   H := B - T;
 
@@ -423,10 +441,10 @@ var
   x, y: integer;
   Lft, T, R, B: integer;
 begin
-  Lft := FGripMargin;
-  T := FGripMargin;
-  R := ClientWidth - FGripMargin;
-  B := ClientHeight - FGripMargin;
+  Lft := FGripPadding;
+  T := FGripPadding;
+  R := ClientWidth - FGripPadding;
+  B := ClientHeight - FGripPadding;
 
   y := T;
   while y + FDotSize <= B do
@@ -445,10 +463,10 @@ procedure TCustomFormGrip.DrawSolid;
 var
   Lft, T, R, B: integer;
 begin
-  Lft := FGripMargin;
-  T := FGripMargin;
-  R := ClientWidth - FGripMargin;
-  B := ClientHeight - FGripMargin;
+  Lft := FGripPadding;
+  T := FGripPadding;
+  R := ClientWidth - FGripPadding;
+  B := ClientHeight - FGripPadding;
 
   Canvas.Pen.Style := psClear;
   case FGripCorner of

@@ -117,8 +117,11 @@ and `OnResize` handlers remain untouched.
   away from it; resizing or repositioning the parent keeps the grip in place.
 - Multiple grip drawing styles: dots (triangular arrangement), lines, grid,
   or solid triangle.
-- Background can either follow the parent colour (`ParentColor = True`) or
-  use its own `Color`.
+- Background can either follow the parent colour (`ParentColor = True`, the
+  default) or use its own `Color`.
+- Two independent offsets, named after the CSS box model:
+  `GripMargin` moves the whole control away from the parent corner, while
+  `GripPadding` insets the drawn pattern inside the control.
 - Resizing respects configurable minimum parent width and height.
 - Double buffered painting with `csOpaque`, so the grip redraws cleanly
   during parent resize without flicker or black artefacts.
@@ -131,7 +134,8 @@ and `OnResize` handlers remain untouched.
 | `Visible`         | `True`           | Shows or hides the grip. |
 | `ShowGrip`        | `True`           | Controls drawing of the grip pattern. |
 | `GripCorner`      | `gcBottomRight`  | Corner of the parent: `gcBottomRight`, `gcBottomLeft`, `gcTopRight`, or `gcTopLeft`. |
-| `GripMargin`      | `2`              | Offset of the drawn pattern from the control edges (in pixels). |
+| `GripMargin`      | `0`              | Outer offset - distance between the control and the parent's corner (in pixels). |
+| `GripPadding`     | `2`              | Inner offset - distance between the control's edge and the drawn pattern (in pixels). |
 | `GripColor`       | `clActiveBorder` | Colour used to draw the grip pattern. |
 | `GripStyle`       | `gsDots`         | Drawing style: `gsDots`, `gsLines`, `gsGrid`, or `gsSolid`. |
 | `DotSize`         | `2`              | Size of the dots (for `gsDots` and `gsGrid`). |
@@ -162,7 +166,8 @@ begin
   Grip.GripCorner := gcBottomRight;
   Grip.GripStyle := gsLines;
   Grip.GripColor := clGray;
-  Grip.GripMargin := 3;
+  Grip.GripMargin := 0;
+  Grip.GripPadding := 3;
   Grip.Width := 16;
   Grip.Height := 16;
 end;
