@@ -93,6 +93,7 @@ type
     FCheckThread: TThread;
     FChecking: boolean;
     FPendingCheck: boolean;
+    FInternalChange: boolean;   // True while we modify RichMemo ourselves
     FCancelRequested: integer; // 0 = no cancel, 1 = cancel requested
     FCheckText: string;        // Snapshot of text for background check
     FLastErrors: RichSpellChecker.TSpellErrorArray;
@@ -234,6 +235,7 @@ begin
   FAutoContextMenu := True;
   FChecking := False;
   FPendingCheck := False;
+  FInternalChange := False;
   FCancelRequested := 0;
   FCheckThread := nil;
   FSpellChecker := nil;
@@ -438,8 +440,7 @@ begin
   if FLanguage = AValue then Exit;
   FLanguage := AValue;
   // Only load dictionary when engine is Hunspell and not during loading
-  if (FEngine = seHunspell) and (FLanguage <> '') and not
-    (csDesigning in ComponentState) and not (csLoading in ComponentState) then
+  if (FEngine = seHunspell) and (FLanguage <> '') and not (csDesigning in ComponentState) and not (csLoading in ComponentState) then
     LoadHunDictionaryForLanguage;
   if FEnabled and Assigned(FRichMemo) and not (csLoading in ComponentState) then
     CheckNow;
@@ -570,8 +571,7 @@ begin
       if not Assigned(FHunSpellChecker) and not FLoadingDictionary then
       begin
         // Attempt to load dictionary if possible (unless loading from .lfm)
-        if (FLanguage <> '') and not (csDesigning in ComponentState) and
-          not (csLoading in ComponentState) then
+        if (FLanguage <> '') and not (csDesigning in ComponentState) and not (csLoading in ComponentState) then
           LoadHunDictionaryForLanguage;
       end;
     end;
@@ -662,6 +662,10 @@ end;
 
 procedure TSpellChecker.OnRichMemoChange(Sender: TObject);
 begin
+  // If the change was caused by our own internal operation
+  // (e.g. applying spell-check underlines), do not notify the user.
+  if FInternalChange then Exit;
+
   // Call original RichMemo.OnChange handler if assigned
   if Assigned(FPrevOnChange) then
     FPrevOnChange(Sender);
@@ -889,9 +893,11 @@ begin
     if FCheckText = FRichMemo.Text then
     begin
       FRichMemo.Lines.BeginUpdate;
+      FInternalChange := True;
       try
         TSpell.ApplyErrors(FSpellChecker, FLastErrors);
       finally
+        FInternalChange := False;
         FRichMemo.Lines.EndUpdate;
       end;
     end;
