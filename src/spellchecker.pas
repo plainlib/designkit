@@ -62,6 +62,7 @@ type
     FEngine: TSpellEngine;
     FHunSpellChecker: THunSpellChecker;
     FHunDictionaryLoaded: boolean; // True when a Hunspell dictionary has been loaded
+    FDictionaryConfigured: boolean; // True once the user code has assigned DicPath or DicUrl
     FDictionaryPendingAction: TDictionaryPendingAction; // Deferred change while a check is running
 
     // Async dictionary loading state
@@ -248,6 +249,7 @@ begin
   FEngine := seWindows;
   FHunSpellChecker := nil;
   FHunDictionaryLoaded := False;
+  FDictionaryConfigured := False;
   FDictionaryPendingAction := dpaNone;
   FLoadThread := nil;
   FLoadingDictionary := False;
@@ -381,8 +383,15 @@ begin
     FRichMemo.OnContextPopup := @OnRichMemoContextPopup;
   end;
 
-  if FEngine = seHunspell then
+  // Auto-load only when the LFM already specified a non-empty DicPath.
+  // Loaded is called before Form.OnCreate, so anything the user plans to set
+  // in Form.OnCreate (including DicPath := '' for URL-only mode) cannot be
+  // honored here. If DicPath is empty at this point we assume the user will
+  // configure the dictionary source explicitly in Form.OnCreate, and the
+  // corresponding setter will trigger the load.
+  if (FEngine = seHunspell) and (FDicPath <> '') then
     LoadHunDictionaryForLanguage;
+
   if FEnabled and Assigned(FRichMemo) then
     CheckNow;
 end;
@@ -439,8 +448,12 @@ procedure TSpellChecker.SetLanguage(const AValue: string);
 begin
   if FLanguage = AValue then Exit;
   FLanguage := AValue;
-  // Only load dictionary when engine is Hunspell and not during loading
-  if (FEngine = seHunspell) and (FLanguage <> '') and not (csDesigning in ComponentState) and not (csLoading in ComponentState) then
+  // Only load when the user has already decided where the dictionary comes
+  // from (DicPath or DicUrl was assigned by user code, not by LFM). This
+  // prevents an unwanted URL download when Language is assigned before
+  // DicPath in Form.Create.
+  if (FEngine = seHunspell) and FDictionaryConfigured and (FLanguage <> '') and not (csDesigning in ComponentState) and
+    not (csLoading in ComponentState) then
     LoadHunDictionaryForLanguage;
   if FEnabled and Assigned(FRichMemo) and not (csLoading in ComponentState) then
     CheckNow;
@@ -570,8 +583,10 @@ begin
     begin
       if not Assigned(FHunSpellChecker) and not FLoadingDictionary then
       begin
-        // Attempt to load dictionary if possible (unless loading from .lfm)
-        if (FLanguage <> '') and not (csDesigning in ComponentState) and not (csLoading in ComponentState) then
+        // Only load when the user has already decided where the dictionary
+        // comes from (DicPath or DicUrl was assigned by user code).
+        if (FLanguage <> '') and FDictionaryConfigured and not (csDesigning in ComponentState) and
+          not (csLoading in ComponentState) then
           LoadHunDictionaryForLanguage;
       end;
     end;
@@ -583,25 +598,31 @@ end;
 procedure TSpellChecker.SetDicPath(const AValue: string);
 begin
   if FDicPath <> AValue then
-  begin
     FDicPath := AValue;
-    if (FEngine = seHunspell) and (FDicPath <> '') and (FLanguage <> '') and not (csDesigning in ComponentState) and
-      not (csLoading in ComponentState) then
-      LoadHunDictionaryForLanguage;
-  end;
+
+  // Any assignment from user code (not from LFM loading) marks the dictionary
+  // source as explicitly configured and arms automatic loading. This includes
+  // the explicit DicPath := '' used to enable URL-only mode.
+  if not (csLoading in ComponentState) then
+    FDictionaryConfigured := True;
+
+  if FDictionaryConfigured and (FEngine = seHunspell) and (FLanguage <> '') and not (csDesigning in ComponentState) and
+    not (csLoading in ComponentState) then
+    LoadHunDictionaryForLanguage;
 end;
 
 procedure TSpellChecker.SetDicUrl(const AValue: string);
 begin
   if FDicUrl <> AValue then
-  begin
     FDicUrl := AValue;
-    // If URL is set and we are in Hunspell mode, we might want to trigger download
-    // but only if dictionary not already loaded and language/path set.
-    if (FEngine = seHunspell) and (FDicUrl <> '') and (FDicPath <> '') and (FLanguage <> '') and not
-      (csDesigning in ComponentState) and not (csLoading in ComponentState) then
-      LoadHunDictionaryForLanguage;
-  end;
+
+  // Same rule as for DicPath: only user code (not LFM loading) arms the load.
+  if not (csLoading in ComponentState) then
+    FDictionaryConfigured := True;
+
+  if FDictionaryConfigured and (FEngine = seHunspell) and (FLanguage <> '') and not (csDesigning in ComponentState) and
+    not (csLoading in ComponentState) then
+    LoadHunDictionaryForLanguage;
 end;
 
 procedure TSpellChecker.LoadHunDictionaryFromFiles(const AFFFileName, DICFileName: string);
