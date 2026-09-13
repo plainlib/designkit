@@ -64,6 +64,18 @@ type
     FHunDictionaryLoaded: boolean; // True when a Hunspell dictionary has been loaded
     FDictionaryPendingAction: TDictionaryPendingAction; // Deferred change while a check is running
 
+    // Async dictionary loading state
+    FLoadThread: TThread;              // Thread handle used to wait on a pending async load
+    FLoadingDictionary: boolean;       // True while a dictionary is being loaded in background
+    FLocalChecker: THunSpellChecker;   // Checker being built by the background thread
+    FLoadSuccess: boolean;             // Result of the last background load
+    FLoadGeneration: integer;          // Incremented on each reload request, detects parameter changes
+    FLoadingGeneration: integer;       // Generation recorded when the current load started
+    FLoadAffFile: string;              // Affix file path for the current async load
+    FLoadDicFile: string;              // Dictionary file path for the current async load
+    FLoadAffStream: TMemoryStream;     // Affix data for stream based async load
+    FLoadDicStream: TMemoryStream;     // Dictionary data for stream based async load
+
     FDicPath: string;              // Directory where Hunspell dictionaries are stored
     FDicUrl: string;               // URL template for downloading dictionaries
 
@@ -115,7 +127,10 @@ type
     procedure ClearUnderlines;
     procedure DoSpellCheckNeeded(Sender: TObject);
     procedure LoadHunDictionaryForLanguage;
-    function TryLoadHunDictionary(const AffFile, DicFile: string): boolean;
+    procedure StartAsyncDictionaryLoadFromFiles(const AFFFile, DICFile: string);
+    procedure StartAsyncDictionaryLoadFromStream(AFFStream, DICStream: TStream);
+    procedure DoLoadHunDictionary;
+    procedure OnHunDictionaryLoaded;
     procedure StartDictionaryDownload(const LangCode: string);
     function BuildDictURL(const Template, CandidateCode, Ext: string): string;
     function GetLibreOfficePathByCode(const Code: string): string;
@@ -232,6 +247,16 @@ begin
   FHunSpellChecker := nil;
   FHunDictionaryLoaded := False;
   FDictionaryPendingAction := dpaNone;
+  FLoadThread := nil;
+  FLoadingDictionary := False;
+  FLocalChecker := nil;
+  FLoadSuccess := False;
+  FLoadGeneration := 0;
+  FLoadingGeneration := 0;
+  FLoadAffFile := '';
+  FLoadDicFile := '';
+  FLoadAffStream := nil;
+  FLoadDicStream := nil;
   FDicPath := '';
   FDicUrl := 'https://raw.githubusercontent.com/LibreOffice/dictionaries/master/{libredict}';
   FDownloading := False;
@@ -249,6 +274,25 @@ destructor TSpellChecker.Destroy;
 begin
   // Signal that the component is being destroyed
   FDestroying := True;
+
+  // Cancel and wait for any pending async dictionary load. The loading thread
+  // runs LoadFromFiles/LoadFromStream which cannot be interrupted, so we must
+  // wait for it to finish before freeing the component.
+  if FLoadThread <> nil then
+  begin
+    FLoadThread.Terminate;
+    while FLoadThread <> nil do
+    begin
+      Sleep(10);
+      CheckSynchronize;
+    end;
+  end;
+
+  // Free any checker that was left behind after the load thread was terminated
+  if Assigned(FLocalChecker) then
+    FreeAndNil(FLocalChecker);
+  FreeAndNil(FLoadAffStream);
+  FreeAndNil(FLoadDicStream);
 
   // Cancel any running check and wait for it to finish
   if FChecking then
@@ -335,10 +379,7 @@ begin
     FRichMemo.OnContextPopup := @OnRichMemoContextPopup;
   end;
 
-  // Only try to load the dictionary if a path has been configured already
-  // (typically from the designer). When the user sets DicPath in Form.Create,
-  // SetDicPath will trigger the load, so we must not start it here with an empty path.
-  if (FEngine = seHunspell) and (FDicPath <> '') then
+  if FEngine = seHunspell then
     LoadHunDictionaryForLanguage;
   if FEnabled and Assigned(FRichMemo) then
     CheckNow;
@@ -396,8 +437,8 @@ procedure TSpellChecker.SetLanguage(const AValue: string);
 begin
   if FLanguage = AValue then Exit;
   FLanguage := AValue;
-  // Only load dictionary when DicPath is set and engine is Hunspell
-  if (FEngine = seHunspell) and ((FDicPath <> '') or (FDicUrl <> '')) and (FLanguage <> '') and not
+  // Only load dictionary when engine is Hunspell and not during loading
+  if (FEngine = seHunspell) and (FLanguage <> '') and not
     (csDesigning in ComponentState) and not (csLoading in ComponentState) then
     LoadHunDictionaryForLanguage;
   if FEnabled and Assigned(FRichMemo) and not (csLoading in ComponentState) then
@@ -526,12 +567,13 @@ begin
     FEngine := AValue;
     if FEngine = seHunspell then
     begin
-      if not Assigned(FHunSpellChecker) then
-        FHunSpellChecker := THunSpellChecker.Create;
-      // Attempt to load dictionary if possible (unless loading from .lfm)
-      if ((FDicPath <> '') or (FDicUrl <> '')) and (FLanguage <> '') and not (csDesigning in ComponentState) and
-        not (csLoading in ComponentState) then
-        LoadHunDictionaryForLanguage;
+      if not Assigned(FHunSpellChecker) and not FLoadingDictionary then
+      begin
+        // Attempt to load dictionary if possible (unless loading from .lfm)
+        if (FLanguage <> '') and not (csDesigning in ComponentState) and
+          not (csLoading in ComponentState) then
+          LoadHunDictionaryForLanguage;
+      end;
     end;
     if FEnabled and Assigned(FRichMemo) and not (csLoading in ComponentState) then
       CheckNow;
@@ -564,24 +606,23 @@ end;
 
 procedure TSpellChecker.LoadHunDictionaryFromFiles(const AFFFileName, DICFileName: string);
 begin
-  if not Assigned(FHunSpellChecker) then
-    FHunSpellChecker := THunSpellChecker.Create;
-  FHunDictionaryLoaded := FHunSpellChecker.LoadFromFiles(AFFFileName, DICFileName);
-  if FHunDictionaryLoaded and (FEngine = seHunspell) and FEnabled and Assigned(FRichMemo) then
-    CheckNow;
+  StartAsyncDictionaryLoadFromFiles(AFFFileName, DICFileName);
 end;
 
 procedure TSpellChecker.LoadHunDictionaryFromStream(AFFStream, DICStream: TStream);
 begin
-  if not Assigned(FHunSpellChecker) then
-    FHunSpellChecker := THunSpellChecker.Create;
-  FHunDictionaryLoaded := FHunSpellChecker.LoadFromStream(AFFStream, DICStream);
-  if FHunDictionaryLoaded and (FEngine = seHunspell) and FEnabled and Assigned(FRichMemo) then
-    CheckNow;
+  StartAsyncDictionaryLoadFromStream(AFFStream, DICStream);
 end;
 
 procedure TSpellChecker.UnloadHunDictionary;
 begin
+  // If an async load is running, defer the unload until it completes
+  if FLoadingDictionary then
+  begin
+    FDictionaryPendingAction := dpaUnload;
+    Exit;
+  end;
+
   // If a background check is running, defer the unload instead of blocking
   // the main thread. OnBackgroundDone will re-enter this method when the
   // worker thread has finished and it is safe to free the dictionary.
@@ -810,12 +851,14 @@ begin
   if FDictionaryPendingAction = dpaUnload then
   begin
     FDictionaryPendingAction := dpaNone;
+    FPendingCheck := False;
     UnloadHunDictionary;
     Exit;
   end
   else if FDictionaryPendingAction = dpaReload then
   begin
     FDictionaryPendingAction := dpaNone;
+    FPendingCheck := False;
     LoadHunDictionaryForLanguage;
     Exit;
   end;
@@ -832,7 +875,6 @@ begin
 
   if not FEnabled or (FRichMemo = nil) or (FSpellChecker = nil) then
   begin
-    FChecking := False;
     if FPendingCheck then
     begin
       FPendingCheck := False;
@@ -856,7 +898,6 @@ begin
   end;
 
   ErrorCount := Length(FLastErrors);
-  FChecking := False;
 
   if Assigned(FOnSpellCheckComplete) then
     FOnSpellCheckComplete(Self, ErrorCount);
@@ -891,6 +932,13 @@ begin
   if csDesigning in ComponentState then Exit;
   if csLoading in ComponentState then Exit;
 
+  // Record that a reload has been requested. If a load is already in progress
+  // its completion callback will notice the generation mismatch and reload.
+  Inc(FLoadGeneration);
+
+  // If an async load is already running, let it finish first
+  if FLoadingDictionary then Exit;
+
   // If a background check is running, defer the reload instead of blocking
   // the main thread. OnBackgroundDone will re-enter this method when the
   // worker thread has finished and it is safe to free the old dictionary.
@@ -905,7 +953,8 @@ begin
   // Prevent concurrent downloads
   if FDownloading then Exit;
 
-  // Unload previous dictionary
+  // Unload previous dictionary. Safe now because no check is running and
+  // no async load is in progress.
   if Assigned(FHunSpellChecker) then
   begin
     FreeAndNil(FHunSpellChecker);
@@ -930,8 +979,9 @@ begin
     begin
       affFile := basePath + candidates[i] + '.aff';
       dicFile := basePath + candidates[i] + '.dic';
-      if TryLoadHunDictionary(affFile, dicFile) then
+      if FileExists(affFile) and FileExists(dicFile) then
       begin
+        StartAsyncDictionaryLoadFromFiles(affFile, dicFile);
         found := True;
         Break;
       end;
@@ -943,6 +993,124 @@ begin
     // Start asynchronous download
     StartDictionaryDownload(FLanguage);
   end;
+end;
+
+procedure TSpellChecker.StartAsyncDictionaryLoadFromFiles(const AFFFile, DICFile: string);
+begin
+  if FLoadingDictionary then Exit; // Guard, should not happen
+
+  // Discard leftovers from a previous load
+  FreeAndNil(FLoadAffStream);
+  FreeAndNil(FLoadDicStream);
+  if Assigned(FLocalChecker) then
+    FreeAndNil(FLocalChecker);
+
+  FLoadAffFile := AFFFile;
+  FLoadDicFile := DICFile;
+  FLoadSuccess := False;
+  FLoadingGeneration := FLoadGeneration;
+  FLoadingDictionary := True;
+
+  RunAsync(FLoadThread, @DoLoadHunDictionary, @OnHunDictionaryLoaded);
+end;
+
+procedure TSpellChecker.StartAsyncDictionaryLoadFromStream(AFFStream, DICStream: TStream);
+begin
+  if FLoadingDictionary then Exit; // Guard, should not happen
+
+  // Discard leftovers from a previous load
+  FreeAndNil(FLoadAffStream);
+  FreeAndNil(FLoadDicStream);
+  if Assigned(FLocalChecker) then
+    FreeAndNil(FLocalChecker);
+
+  // The source streams may be freed by the caller after we return, so we
+  // copy their contents into memory streams that we own.
+  FLoadAffStream := TMemoryStream.Create;
+  FLoadDicStream := TMemoryStream.Create;
+  AFFStream.Position := 0;
+  DICStream.Position := 0;
+  FLoadAffStream.CopyFrom(AFFStream, AFFStream.Size);
+  FLoadDicStream.CopyFrom(DICStream, DICStream.Size);
+  FLoadAffStream.Position := 0;
+  FLoadDicStream.Position := 0;
+
+  FLoadAffFile := '';
+  FLoadDicFile := '';
+  FLoadSuccess := False;
+  FLoadingGeneration := FLoadGeneration;
+  FLoadingDictionary := True;
+
+  RunAsync(FLoadThread, @DoLoadHunDictionary, @OnHunDictionaryLoaded);
+end;
+
+procedure TSpellChecker.DoLoadHunDictionary;
+begin
+  // This method runs in a background thread, do not touch UI here
+  FLocalChecker := THunSpellChecker.Create;
+  try
+    if Assigned(FLoadAffStream) then
+      FLoadSuccess := FLocalChecker.LoadFromStream(FLoadAffStream, FLoadDicStream)
+    else
+      FLoadSuccess := FLocalChecker.LoadFromFiles(FLoadAffFile, FLoadDicFile);
+  except
+    FLoadSuccess := False;
+  end;
+  if not FLoadSuccess then
+    FreeAndNil(FLocalChecker);
+end;
+
+procedure TSpellChecker.OnHunDictionaryLoaded;
+begin
+  // This method runs in the main thread after DoLoadHunDictionary completes
+  FLoadingDictionary := False;
+
+  // Free temporary streams used for stream based loading
+  FreeAndNil(FLoadAffStream);
+  FreeAndNil(FLoadDicStream);
+
+  if FDestroying then
+  begin
+    if Assigned(FLocalChecker) then
+      FreeAndNil(FLocalChecker);
+    Exit;
+  end;
+
+  // Handle a deferred unload requested while the load was running
+  if FDictionaryPendingAction = dpaUnload then
+  begin
+    FDictionaryPendingAction := dpaNone;
+    if Assigned(FLocalChecker) then
+      FreeAndNil(FLocalChecker);
+    UnloadHunDictionary;
+    Exit;
+  end;
+
+  // Discard a failed load
+  if not FLoadSuccess or not Assigned(FLocalChecker) then
+  begin
+    if Assigned(FLocalChecker) then
+      FreeAndNil(FLocalChecker);
+    Exit;
+  end;
+
+  // If the load parameters changed while loading, discard the result and reload
+  if FLoadingGeneration <> FLoadGeneration then
+  begin
+    FreeAndNil(FLocalChecker);
+    LoadHunDictionaryForLanguage;
+    Exit;
+  end;
+
+  // Install the newly loaded dictionary
+  if Assigned(FHunSpellChecker) then
+    FreeAndNil(FHunSpellChecker);
+  FHunSpellChecker := FLocalChecker;
+  FLocalChecker := nil;
+  FHunDictionaryLoaded := True;
+
+  if FEnabled and Assigned(FRichMemo) then
+    CheckNow;
 end;
 
 procedure TSpellChecker.StartDictionaryDownload(const LangCode: string);
@@ -1132,8 +1300,15 @@ var
 begin
   FDownloading := False;
 
-  // Ignore if component is being destroyed or language changed during download
-  if FDestroying or (FDownloadLang <> FLanguage) then Exit;
+  // Ignore if component is being destroyed
+  if FDestroying then Exit;
+
+  // If language changed during download, restart the load for the current language
+  if FDownloadLang <> FLanguage then
+  begin
+    LoadHunDictionaryForLanguage;
+    Exit;
+  end;
 
   // Check if we got both streams without errors
   if (Length(AStreams) < 2) or (Length(AErrors) < 2) then Exit;
@@ -1141,11 +1316,8 @@ begin
   if (AStreams[0] = nil) or (AStreams[1] = nil) then Exit;
   if (AStreams[0].Size = 0) or (AStreams[1].Size = 0) then Exit;
 
-  // Load dictionary from streams
-  LoadHunDictionaryFromStream(AStreams[0], AStreams[1]);
-
   // Attempt to cache to DicPath
-  if FHunDictionaryLoaded and (FDicPath <> '') then
+  if FDicPath <> '' then
   begin
     basePath := FDicPath;
     if not IsPathAbsolute(basePath) then
@@ -1166,21 +1338,8 @@ begin
     end;
   end;
 
-  // If dictionary loaded, CheckNow will be called inside LoadHunDictionaryFromStream,
-  // but we also call it here to be safe (it will be skipped if already checking)
-  if FHunDictionaryLoaded and FEnabled and Assigned(FRichMemo) then
-    CheckNow;
-end;
-
-function TSpellChecker.TryLoadHunDictionary(const AffFile, DicFile: string): boolean;
-begin
-  Result := False;
-  if not FileExists(AffFile) or not FileExists(DicFile) then
-    Exit;
-  if not Assigned(FHunSpellChecker) then
-    FHunSpellChecker := THunSpellChecker.Create;
-  FHunDictionaryLoaded := FHunSpellChecker.LoadFromFiles(AffFile, DicFile);
-  Result := FHunDictionaryLoaded;
+  // Start asynchronous load from the downloaded streams
+  StartAsyncDictionaryLoadFromStream(AStreams[0], AStreams[1]);
 end;
 
 end.
