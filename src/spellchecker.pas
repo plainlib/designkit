@@ -42,6 +42,9 @@ type
   // Spell engine selection
   TSpellEngine = (seWindows, seHunspell);
 
+  // Dictionary change deferred until the running background check finishes
+  TDictionaryPendingAction = (dpaNone, dpaReload, dpaUnload);
+
   TSpellChecker = class(TComponent)
   private
     FRichMemo: TRichMemo;
@@ -59,6 +62,8 @@ type
     FEngine: TSpellEngine;
     FHunSpellChecker: THunSpellChecker;
     FHunDictionaryLoaded: boolean; // True when a Hunspell dictionary has been loaded
+    FDictionaryPendingAction: TDictionaryPendingAction; // Deferred change while a check is running
+
     FDicPath: string;              // Directory where Hunspell dictionaries are stored
     FDicUrl: string;               // URL template for downloading dictionaries
 
@@ -226,6 +231,7 @@ begin
   FEngine := seWindows;
   FHunSpellChecker := nil;
   FHunDictionaryLoaded := False;
+  FDictionaryPendingAction := dpaNone;
   FDicPath := '';
   FDicUrl := 'https://raw.githubusercontent.com/LibreOffice/dictionaries/master/{libredict}';
   FDownloading := False;
@@ -329,7 +335,10 @@ begin
     FRichMemo.OnContextPopup := @OnRichMemoContextPopup;
   end;
 
-  if FEngine = seHunspell then
+  // Only try to load the dictionary if a path has been configured already
+  // (typically from the designer). When the user sets DicPath in Form.Create,
+  // SetDicPath will trigger the load, so we must not start it here with an empty path.
+  if (FEngine = seHunspell) and (FDicPath <> '') then
     LoadHunDictionaryForLanguage;
   if FEnabled and Assigned(FRichMemo) then
     CheckNow;
@@ -573,6 +582,17 @@ end;
 
 procedure TSpellChecker.UnloadHunDictionary;
 begin
+  // If a background check is running, defer the unload instead of blocking
+  // the main thread. OnBackgroundDone will re-enter this method when the
+  // worker thread has finished and it is safe to free the dictionary.
+  if FChecking then
+  begin
+    FPendingCheck := False;
+    FDictionaryPendingAction := dpaUnload;
+    InterlockedExchange(FCancelRequested, 1);
+    Exit;
+  end;
+
   if Assigned(FHunSpellChecker) then
   begin
     FreeAndNil(FHunSpellChecker);
@@ -695,6 +715,10 @@ begin
   if FContextMenuOpen then
     Exit;
 
+  // Never start a Hunspell check while the dictionary is unloaded or being reloaded
+  if (FEngine = seHunspell) and ((FHunSpellChecker = nil) or (not FHunDictionaryLoaded)) then
+    Exit;
+
   if FChecking then
   begin
     FPendingCheck := True;
@@ -778,9 +802,26 @@ begin
     Exit;
   end;
 
+  FChecking := False;
+
+  // Apply a dictionary change that was deferred while the worker thread was
+  // still running. Now that FChecking is False, it is safe to free the old
+  // dictionary object, so no blocking wait is required.
+  if FDictionaryPendingAction = dpaUnload then
+  begin
+    FDictionaryPendingAction := dpaNone;
+    UnloadHunDictionary;
+    Exit;
+  end
+  else if FDictionaryPendingAction = dpaReload then
+  begin
+    FDictionaryPendingAction := dpaNone;
+    LoadHunDictionaryForLanguage;
+    Exit;
+  end;
+
   if InterlockedCompareExchange(FCancelRequested, 0, 0) = 1 then
   begin
-    FChecking := False;
     if FPendingCheck then
     begin
       FPendingCheck := False;
@@ -849,6 +890,17 @@ var
 begin
   if csDesigning in ComponentState then Exit;
   if csLoading in ComponentState then Exit;
+
+  // If a background check is running, defer the reload instead of blocking
+  // the main thread. OnBackgroundDone will re-enter this method when the
+  // worker thread has finished and it is safe to free the old dictionary.
+  if FChecking then
+  begin
+    FPendingCheck := False;
+    FDictionaryPendingAction := dpaReload;
+    InterlockedExchange(FCancelRequested, 1);
+    Exit;
+  end;
 
   // Prevent concurrent downloads
   if FDownloading then Exit;
