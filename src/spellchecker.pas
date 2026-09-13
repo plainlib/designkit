@@ -317,6 +317,18 @@ end;
 procedure TSpellChecker.Loaded;
 begin
   inherited Loaded;
+
+  // Hook RichMemo events now that all LFM properties, including the user's
+  // OnChange and OnContextPopup handlers, have been applied. In the designer
+  // we never touch these events, so the user sees his own handlers in the IDE.
+  if Assigned(FRichMemo) and Assigned(FSpellChecker) and not (csDesigning in ComponentState) then
+  begin
+    FPrevOnChange := FRichMemo.OnChange;
+    FRichMemo.OnChange := @OnRichMemoChange;
+    FPrevContextPopup := FRichMemo.OnContextPopup;
+    FRichMemo.OnContextPopup := @OnRichMemoContextPopup;
+  end;
+
   if FEngine = seHunspell then
     LoadHunDictionaryForLanguage;
   if FEnabled and Assigned(FRichMemo) then
@@ -344,15 +356,21 @@ begin
 
   if Assigned(FRichMemo) then
   begin
-    FPrevOnChange := FRichMemo.OnChange;
-    FRichMemo.OnChange := @OnRichMemoChange;
-    FPrevContextPopup := FRichMemo.OnContextPopup;
-    FRichMemo.OnContextPopup := @OnRichMemoContextPopup;
+    // Hook RichMemo events only at runtime and only after LFM has finished loading.
+    // In the designer and during LFM load we leave the user's events untouched;
+    // Loaded will do the hooking after all properties, including the user's
+    // OnChange and OnContextPopup handlers, have been applied.
+    if not (csDesigning in ComponentState) and not (csLoading in ComponentState) then
+    begin
+      FPrevOnChange := FRichMemo.OnChange;
+      FRichMemo.OnChange := @OnRichMemoChange;
+      FPrevContextPopup := FRichMemo.OnContextPopup;
+      FRichMemo.OnContextPopup := @OnRichMemoContextPopup;
+    end;
 
     FSpellChecker := TRichSpellChecker.Create(FRichMemo);
     FSpellChecker.OnSpellCheckNeeded := @DoSpellCheckNeeded;
 
-    // Apply current integration settings to the new internal checker
     FSpellChecker.PopupMenu := FPopupMenu;
     FSpellChecker.SubMenu := FSubMenu;
     FSpellChecker.SubMenuCaption := FSubMenuCaption;
@@ -360,7 +378,6 @@ begin
 
     ClearUnderlines;
 
-    // If real-time is enabled and all settings ready, start check immediately
     if FEnabled and FRealTime and not (csDesigning in ComponentState) and not (csLoading in ComponentState) then
       CheckNow;
   end;
@@ -584,6 +601,10 @@ end;
 
 procedure TSpellChecker.OnRichMemoChange(Sender: TObject);
 begin
+  // Call original RichMemo.OnChange handler if assigned
+  if Assigned(FPrevOnChange) then
+    FPrevOnChange(Sender);
+
   if not FRealTime or not FEnabled then Exit;
   if not Assigned(FDebounceTimer) then Exit;
 
@@ -612,6 +633,12 @@ begin
 
   if Handled then Exit;
 
+  // Call original RichMemo.OnContextPopup handler if assigned
+  if Assigned(FPrevContextPopup) then
+    FPrevContextPopup(Sender, MousePos, Handled);
+
+  if Handled then Exit;
+
   if Assigned(FSpellChecker) then
   begin
     FContextMenuOpen := True;
@@ -635,9 +662,6 @@ begin
     Handled := True;
     Exit;
   end;
-
-  if Assigned(FPrevContextPopup) then
-    FPrevContextPopup(Sender, MousePos, Handled);
 end;
 
 procedure TSpellChecker.DoSpellCheckNeeded(Sender: TObject);
