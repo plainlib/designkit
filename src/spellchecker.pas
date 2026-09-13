@@ -1294,6 +1294,7 @@ begin
     'uk_UA': Result := 'uk_UA/uk_UA';
     'vi': Result := 'vi/vi_VN';
     'vi_VN': Result := 'vi/vi_VN';
+    'zu_ZA': Result := 'zu_ZA/zu_ZA';
     else
       Result := '';
   end;
