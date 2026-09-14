@@ -1329,9 +1329,9 @@ begin
     'or_IN': Result := 'or_IN/or_IN';
     'pa_IN': Result := 'pa_IN/pa_IN';
     'pl_PL': Result := 'pl_PL/pl_PL';
-    'pt_BR': Result := 'pt_BR/pt_BR';
+    'pt': Result := 'pt_PT/pt_PT';
     'pt_PT': Result := 'pt_PT/pt_PT';
-    'pt': Result := 'pt_BR/pt_BR'; // default to Brazilian if only 'pt'
+    'pt_BR': Result := 'pt_BR/pt_BR';
     'ro': Result := 'ro/ro_RO';
     'ro_RO': Result := 'ro/ro_RO';
     'ru_RU': Result := 'ru_RU/ru_RU';
