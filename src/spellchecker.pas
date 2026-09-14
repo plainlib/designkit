@@ -38,6 +38,8 @@ type
   TSpellCheckCompleteEvent = procedure(Sender: TObject; ErrorCount: integer) of object;
   // Event fired when context menu is about to be shown (before our automatic handling)
   TSpellContextPopupEvent = procedure(Sender: TObject; MousePos: TPoint; var Handled: boolean) of object;
+  // Event fired right after a suggestion from the context menu replaces a word
+  TSpellReplaceEvent = procedure(Sender: TObject) of object;
 
   // Spell engine selection
   TSpellEngine = (seWindows, seHunspell);
@@ -57,8 +59,10 @@ type
     FCheckDelay: integer;
     FAutoApply: boolean;
     FAutoContextMenu: boolean;
+    FMemoChangeOnReplace: boolean;
     FOnSpellCheckComplete: TSpellCheckCompleteEvent;
     FOnContextPopup: TSpellContextPopupEvent; // optional user hook
+    FOnReplace: TSpellReplaceEvent;           // fired after a replacement from the menu
     FEngine: TSpellEngine;
     FHunSpellChecker: THunSpellChecker;
     FHunDictionaryLoaded: boolean; // True when a Hunspell dictionary has been loaded
@@ -111,6 +115,7 @@ type
     procedure SetCheckDelay(AValue: integer);
     procedure SetOptions(AValue: TSpellCheckOptions);
     procedure SetAutoContextMenu(AValue: boolean);
+    procedure SetMemoChangeOnReplace(AValue: boolean);
     procedure SetPopupMenu(AValue: TPopupMenu);
     procedure SetUseSubMenu(AValue: boolean);
     procedure SetSuggestionsCaption(const AValue: string);
@@ -180,7 +185,10 @@ type
     // Automatically attach to RichMemo.OnContextPopup to show suggestion menu.
     // When enabled, the component handles context menu and falls back to RichMemo.PopupMenu.
     property AutoContextMenu: boolean read FAutoContextMenu write SetAutoContextMenu default True;
-
+    // When True, RichMemo.OnChange fires when a word is replaced from the
+    // suggestions menu. When False (default), OnChange is suppressed during
+    // the replacement to avoid reentrant spell checking.
+    property MemoChangeOnReplace: boolean read FMemoChangeOnReplace write SetMemoChangeOnReplace default False;
     // External PopupMenu to integrate suggestions into (if nil, use default behavior)
     property PopupMenu: TPopupMenu read FPopupMenu write SetPopupMenu;
     // If True, suggestions are placed in a submenu with caption SuggestionsCaption
@@ -206,6 +214,10 @@ type
     // Called when context menu is about to be shown (before our automatic handler).
     // Set Handled to True to prevent our handling.
     property OnContextPopup: TSpellContextPopupEvent read FOnContextPopup write FOnContextPopup;
+    // Called right after a word was replaced from the suggestions menu.
+    // RichMemo.OnChange does not fire in this case, so use this event if you
+    // need to react to a replacement.
+    property OnReplace: TSpellReplaceEvent read FOnReplace write FOnReplace;
   end;
 
 implementation
@@ -234,6 +246,7 @@ begin
   FCheckDelay := 1000;
   FAutoApply := True;
   FAutoContextMenu := True;
+  FMemoChangeOnReplace := False;
   FChecking := False;
   FPendingCheck := False;
   FInternalChange := False;
@@ -266,6 +279,7 @@ begin
   FDownloading := False;
   FDownloadLang := '';
   FLanguage := ''; // Initialize language to empty
+  FOnReplace := nil;
 
   // Default integration settings
   FPopupMenu := nil;
@@ -436,6 +450,7 @@ begin
     FSpellChecker.SubMenu := FSubMenu;
     FSpellChecker.SubMenuCaption := FSubMenuCaption;
     FSpellChecker.SubMenuIndex := FSubMenuIndex;
+    FSpellChecker.MemoChangeOnReplace := FMemoChangeOnReplace;
 
     ClearUnderlines;
 
@@ -534,6 +549,16 @@ begin
   end;
 end;
 
+procedure TSpellChecker.SetMemoChangeOnReplace(AValue: boolean);
+begin
+  if FMemoChangeOnReplace <> AValue then
+  begin
+    FMemoChangeOnReplace := AValue;
+    if Assigned(FSpellChecker) then
+      FSpellChecker.MemoChangeOnReplace := AValue;
+  end;
+end;
+
 procedure TSpellChecker.SetPopupMenu(AValue: TPopupMenu);
 begin
   if FPopupMenu <> AValue then
@@ -585,8 +610,8 @@ begin
       begin
         // Only load when the user has already decided where the dictionary
         // comes from (DicPath or DicUrl was assigned by user code).
-        if (FLanguage <> '') and FDictionaryConfigured and not (csDesigning in ComponentState) and
-          not (csLoading in ComponentState) then
+        if (FLanguage <> '') and FDictionaryConfigured and not (csDesigning in ComponentState) and not
+          (csLoading in ComponentState) then
           LoadHunDictionaryForLanguage;
       end;
     end;
@@ -736,7 +761,14 @@ begin
       end;
     finally
       FContextMenuOpen := False;
-      // Do not check here; replacement already triggered check if needed
+      // If a suggestion was chosen, RichMemo.OnChange did not fire because
+      // RichSpellChecker clears it during replacement. Start the re-check now.
+      if FReplaceJustDone then
+      begin
+        FReplaceJustDone := False;
+        if FEnabled and Assigned(FRichMemo) then
+          CheckNow;
+      end;
     end;
     if Handled then Exit;
   end;
@@ -752,20 +784,26 @@ end;
 
 procedure TSpellChecker.DoSpellCheckNeeded(Sender: TObject);
 begin
-  // Called after replacement from context menu
-  if FContextMenuOpen then
-    Exit; // will be handled after menu closes (but we already prevent duplicate)
-
-  // Mark that a replacement happened; the next OnChange will do immediate check
+  // Called by RichSpellChecker after a replacement from the context menu.
+  // RichSpellChecker temporarily clears RichMemo.OnChange during the replacement,
+  // so OnChange does not fire here. We must trigger the re-check ourselves.
   FReplaceJustDone := True;
 
-  // Stop debounce timer to avoid extra check
+  // Notify the user that a replacement has just happened
+  if Assigned(FOnReplace) then
+    FOnReplace(Self);
+
+  // Stop debounce timer to avoid an extra check
   if Assigned(FDebounceTimer) then
     FDebounceTimer.Enabled := False;
 
-  // Trigger immediate check now (instead of waiting for OnChange)
-  if FEnabled and Assigned(FRichMemo) then
+  // If the context menu is still open, OnRichMemoContextPopup will start the
+  // check as soon as the menu closes. Otherwise start it immediately.
+  if not FContextMenuOpen and FEnabled and Assigned(FRichMemo) then
+  begin
+    FReplaceJustDone := False;
     CheckNow;
+  end;
 end;
 
 procedure TSpellChecker.DoDebouncedCheck(Sender: TObject);
