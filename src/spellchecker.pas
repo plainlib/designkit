@@ -154,6 +154,13 @@ type
     procedure CancelCheck;
     // Clear all existing error underlines
     procedure ClearErrors;
+    // Draw the current spell errors (last check result) as underlines on any
+    // RichMemo that displays the same text. Useful when the same text is
+    // mirrored in another control (for example a grid cell) and should be
+    // highlighted too. The target memo is not switched to and no background
+    // check is started; interaction (context menu, suggestions) still happens
+    // only in the memo currently assigned to RichMemo.
+    procedure ApplyErrorsTo(ATargetMemo: TRichMemo);
     // Returns True if a check is currently running
     function IsChecking: boolean;
     // Manually show context menu with suggestions at given client coordinates
@@ -894,6 +901,23 @@ begin
   SetLength(FLastErrors, 0);
 end;
 
+procedure TSpellChecker.ApplyErrorsTo(ATargetMemo: TRichMemo);
+begin
+  if not Assigned(ATargetMemo) then
+    Exit;
+
+  // Text must match the snapshot taken at the last check, otherwise the stored
+  // offsets would point to the wrong characters. In that case just clear
+  // whatever was drawn earlier and wait for a real check.
+  if (FCheckText = '') or (ATargetMemo.Text <> FCheckText) then
+  begin
+    RichSpellChecker.ClearSpellErrors(ATargetMemo);
+    Exit;
+  end;
+
+  RichSpellChecker.DrawSpellErrors(ATargetMemo, FLastErrors);
+end;
+
 function TSpellChecker.IsChecking: boolean;
 begin
   Result := FChecking;
@@ -980,8 +1004,8 @@ begin
       try
         TSpell.ApplyErrors(FSpellChecker, FLastErrors);
       finally
-        FInternalChange := False;
         FRichMemo.Lines.EndUpdate;
+        FInternalChange := False;
       end;
     end;
   end;
