@@ -411,15 +411,21 @@ begin
 end;
 
 procedure TSpellChecker.SetRichMemo(AValue: TRichMemo);
+var
+  ReuseErrors: boolean;
 begin
   if FRichMemo = AValue then Exit;
 
+  ReuseErrors := Assigned(AValue) and Assigned(FRichMemo) and (FCheckText <> '') and (AValue.Text = FCheckText);
+
   if Assigned(FRichMemo) then
   begin
-    if Assigned(FPrevContextPopup) then
-      FRichMemo.OnContextPopup := FPrevContextPopup;
-    if Assigned(FPrevOnChange) then
-      FRichMemo.OnChange := FPrevOnChange;
+    // Always restore the original handlers, even when the saved value is nil.
+    // A nil value simply means the RichMemo had no handler before we hooked it.
+    // Skipping the restore would leave our own handler installed and cause
+    // infinite recursion when this Memo is selected again later.
+    FRichMemo.OnContextPopup := FPrevContextPopup;
+    FRichMemo.OnChange := FPrevOnChange;
     FPrevContextPopup := nil;
     FPrevOnChange := nil;
 
@@ -431,15 +437,20 @@ begin
 
   if Assigned(FRichMemo) then
   begin
-    // Hook RichMemo events only at runtime and only after LFM has finished loading.
-    // In the designer and during LFM load we leave the user's events untouched;
-    // Loaded will do the hooking after all properties, including the user's
-    // OnChange and OnContextPopup handlers, have been applied.
     if not (csDesigning in ComponentState) and not (csLoading in ComponentState) then
     begin
-      FPrevOnChange := FRichMemo.OnChange;
+      // Only remember a real user handler. If our own hook is still installed
+      // (for example because some other path forgot to restore it), storing it
+      // in FPrevOnChange would produce infinite recursion the next time we fire
+      // OnChange. Same rule applies to OnContextPopup.
+      if not Assigned(FRichMemo.OnChange) or (TMethod(FRichMemo.OnChange).Code <> TMethod(@OnRichMemoChange).Code) then
+        FPrevOnChange := FRichMemo.OnChange;
+
+      if not Assigned(FRichMemo.OnContextPopup) or (TMethod(FRichMemo.OnContextPopup).Code <>
+        TMethod(@OnRichMemoContextPopup).Code) then
+        FPrevContextPopup := FRichMemo.OnContextPopup;
+
       FRichMemo.OnChange := @OnRichMemoChange;
-      FPrevContextPopup := FRichMemo.OnContextPopup;
       FRichMemo.OnContextPopup := @OnRichMemoContextPopup;
     end;
 
@@ -452,9 +463,19 @@ begin
     FSpellChecker.SubMenuIndex := FSubMenuIndex;
     FSpellChecker.MemoChangeOnReplace := FMemoChangeOnReplace;
 
-    ClearUnderlines;
+    if ReuseErrors then
+    begin
+      FInternalChange := True;
+      try
+        TSpell.ApplyErrors(FSpellChecker, FLastErrors);
+      finally
+        FInternalChange := False;
+      end;
+    end
+    else
+      ClearUnderlines;
 
-    if FEnabled and FRealTime and not (csDesigning in ComponentState) and not (csLoading in ComponentState) then
+    if not ReuseErrors and FEnabled and FRealTime and not (csDesigning in ComponentState) and not (csLoading in ComponentState) then
       CheckNow;
   end;
 end;
@@ -695,13 +716,16 @@ begin
 
   if FAutoContextMenu then
   begin
-    FPrevContextPopup := FRichMemo.OnContextPopup;
+    // Do not store our own hook as the previous handler
+    if not Assigned(FRichMemo.OnContextPopup) or (TMethod(FRichMemo.OnContextPopup).Code <>
+      TMethod(@OnRichMemoContextPopup).Code) then
+      FPrevContextPopup := FRichMemo.OnContextPopup;
     FRichMemo.OnContextPopup := @OnRichMemoContextPopup;
   end
   else
   begin
-    if Assigned(FPrevContextPopup) then
-      FRichMemo.OnContextPopup := FPrevContextPopup;
+    // Restore unconditionally: nil is a valid original value
+    FRichMemo.OnContextPopup := FPrevContextPopup;
     FPrevContextPopup := nil;
   end;
 end;
