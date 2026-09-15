@@ -421,7 +421,17 @@ procedure TSpellChecker.SetRichMemo(AValue: TRichMemo);
 var
   ReuseErrors: boolean;
 begin
-  if FRichMemo = AValue then Exit;
+  if FRichMemo = AValue then
+  begin
+    // The same memo object may be reused with new content (for example the
+    // grid reuses a single cell editor for different rows). If the text no
+    // longer matches the last check snapshot, run a fresh check so the
+    // underlines follow the new content.
+    if Assigned(AValue) and (AValue.Text <> FCheckText) and FEnabled and not (csDesigning in ComponentState) and
+      not (csLoading in ComponentState) then
+      CheckNow;
+    Exit;
+  end;
 
   ReuseErrors := Assigned(AValue) and Assigned(FRichMemo) and (FCheckText <> '') and (AValue.Text = FCheckText);
 
@@ -482,7 +492,7 @@ begin
     else
       ClearUnderlines;
 
-    if not ReuseErrors and FEnabled and FRealTime and not (csDesigning in ComponentState) and not (csLoading in ComponentState) then
+    if not ReuseErrors and FEnabled and not (csDesigning in ComponentState) and not (csLoading in ComponentState) then
       CheckNow;
   end;
 end;
