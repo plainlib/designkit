@@ -866,6 +866,9 @@ begin
 
   if FChecking then
   begin
+    // Ask the running check to abort as soon as possible so a fresh one can
+    // start without waiting for the full dictionary scan to complete.
+    InterlockedExchange(FCancelRequested, 1);
     FPendingCheck := True;
     Exit;
   end;
@@ -873,6 +876,10 @@ begin
   InterlockedExchange(FCancelRequested, 0);
   FChecking := True;
   FCheckText := FRichMemo.Text;
+  // Give the Hunspell engine a pointer to the cancellation flag so that long
+  // running dictionary scans stop quickly when text or language changes.
+  if (FEngine = seHunspell) and Assigned(FHunSpellChecker) then
+    FHunSpellChecker.CancelFlag := @FCancelRequested;
   RunAsync(@DoBackgroundCheck, @OnBackgroundDone);
 end;
 
