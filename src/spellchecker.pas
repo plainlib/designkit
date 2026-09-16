@@ -141,6 +141,7 @@ type
     procedure StartDictionaryDownload(const LangCode: string);
     function BuildDictURL(const Template, CandidateCode, Ext: string): string;
     function GetLibreOfficePathByCode(const Code: string): string;
+    function GetWooormPathByCode(const Code: string): string;
     procedure OnDictionaryDownloadComplete(Sender: TObject; AStreams: array of TMemoryStream; AErrors: array of string);
   protected
     procedure Notification(AComponent: TComponent; Operation: TOperation); override;
@@ -213,6 +214,9 @@ type
     // URL template for downloading Hunspell dictionaries. Supports placeholders:
     //   {dict}      - replaced by language code (e.g. en_US) and then .aff/.dic appended
     //   {libredict} - replaced by path inside LibreOffice dictionaries repository
+    //   https://raw.githubusercontent.com/LibreOffice/dictionaries/master/{libredict}
+    //   {wooormdict} - replaced by path inside Wooormdict dictionaries repository
+    //   https://raw.githubusercontent.com/wooorm/dictionaries/refs/heads/main/dictionaries/{wooormdict}
     // If empty, no automatic download is performed.
     property DicUrl: string read FDicUrl write SetDicUrl;
 
@@ -1273,6 +1277,7 @@ function TSpellChecker.BuildDictURL(const Template, CandidateCode, Ext: string):
 var
   url: string;
   librePath: string;
+  wooormPath: string;
 begin
   url := Template;
 
@@ -1287,6 +1292,13 @@ begin
     if librePath = '' then
       Exit('');
     url := StringReplace(url, '{libredict}', librePath + '.' + Ext, [rfReplaceAll]);
+  end
+  else if Pos('{wooormdict}', url) > 0 then
+  begin
+    wooormPath := GetWooormPathByCode(CandidateCode);
+    if wooormPath = '' then
+      Exit('');
+    url := StringReplace(url, '{wooormdict}', wooormPath + '.' + Ext, [rfReplaceAll]);
   end
   else
   begin
@@ -1419,6 +1431,153 @@ begin
     'vi': Result := 'vi/vi_VN';
     'vi_VN': Result := 'vi/vi_VN';
     'zu_ZA': Result := 'zu_ZA/zu_ZA';
+    else
+      Result := '';
+  end;
+end;
+
+function TSpellChecker.GetWooormPathByCode(const Code: string): string;
+begin
+  // Returns path (without extension) inside wooorm dictionaries repository for given candidate code.
+  // Code is expected to be a candidate from HunspellDictionaryCandidates (may contain '-' or '_').
+  case Code of
+    'bg': Result := 'bg/index';
+    'bg_BG': Result := 'bg/index';
+    'br': Result := 'br/index';
+    'br_FR': Result := 'br/index';
+    'ca': Result := 'ca/index';
+    'ca_ES': Result := 'ca/index';
+    'ca-valencia': Result := 'ca-valencia/index';
+    'cs': Result := 'cs/index';
+    'cs_CZ': Result := 'cs/index';
+    'cy': Result := 'cy/index';
+    'da': Result := 'da/index';
+    'da_DK': Result := 'da/index';
+    'de': Result := 'de/index';
+    'de_DE': Result := 'de/index';
+    'de_DE_frami': Result := 'de/index';
+    'de_AT': Result := 'de-AT/index';
+    'de_AT_frami': Result := 'de-AT/index';
+    'de_CH': Result := 'de-CH/index';
+    'de_CH_frami': Result := 'de-CH/index';
+    'el': Result := 'el/index';
+    'el_GR': Result := 'el/index';
+    'el-polyton': Result := 'el-polyton/index';
+    'en': Result := 'en/index';
+    'en_US': Result := 'en/index';
+    'en_AU': Result := 'en-AU/index';
+    'en_CA': Result := 'en-CA/index';
+    'en_GB': Result := 'en-GB/index';
+    'en_ZA': Result := 'en-ZA/index';
+    'eo': Result := 'eo/index';
+    'es': Result := 'es/index';
+    'es_ES': Result := 'es/index';
+    'es_AR': Result := 'es-AR/index';
+    'es_BO': Result := 'es-BO/index';
+    'es_CL': Result := 'es-CL/index';
+    'es_CO': Result := 'es-CO/index';
+    'es_CR': Result := 'es-CR/index';
+    'es_CU': Result := 'es-CU/index';
+    'es_DO': Result := 'es-DO/index';
+    'es_EC': Result := 'es-EC/index';
+    'es_GT': Result := 'es-GT/index';
+    'es_HN': Result := 'es-HN/index';
+    'es_MX': Result := 'es-MX/index';
+    'es_NI': Result := 'es-NI/index';
+    'es_PA': Result := 'es-PA/index';
+    'es_PE': Result := 'es-PE/index';
+    'es_PH': Result := 'es-PH/index';
+    'es_PR': Result := 'es-PR/index';
+    'es_PY': Result := 'es-PY/index';
+    'es_SV': Result := 'es-SV/index';
+    'es_US': Result := 'es-US/index';
+    'es_UY': Result := 'es-UY/index';
+    'es_VE': Result := 'es-VE/index';
+    'et': Result := 'et/index';
+    'et_EE': Result := 'et/index';
+    'eu': Result := 'eu/index';
+    'fa': Result := 'fa/index';
+    'fa_IR': Result := 'fa/index';
+    'fa-IR': Result := 'fa/index';
+    'fo': Result := 'fo/index';
+    'fr': Result := 'fr/index';
+    'fr_FR': Result := 'fr/index';
+    'fur': Result := 'fur/index';
+    'fy': Result := 'fy/index';
+    'ga': Result := 'ga/index';
+    'gd': Result := 'gd/index';
+    'gd_GB': Result := 'gd/index';
+    'gl': Result := 'gl/index';
+    'gl_ES': Result := 'gl/index';
+    'he': Result := 'he/index';
+    'he_IL': Result := 'he/index';
+    'hr': Result := 'hr/index';
+    'hr_HR': Result := 'hr/index';
+    'hu': Result := 'hu/index';
+    'hu_HU': Result := 'hu/index';
+    'hy': Result := 'hy/index';
+    'hy_AM': Result := 'hy/index';
+    'hyw': Result := 'hyw/index';
+    'ia': Result := 'ia/index';
+    'ie': Result := 'ie/index';
+    'is': Result := 'is/index';
+    'it': Result := 'it/index';
+    'it_IT': Result := 'it/index';
+    'ka': Result := 'ka/index';
+    'ka_GE': Result := 'ka/index';
+    'ko': Result := 'ko/index';
+    'ko_KR': Result := 'ko/index';
+    'la': Result := 'la/index';
+    'lb': Result := 'lb/index';
+    'lt': Result := 'lt/index';
+    'lt_LT': Result := 'lt/index';
+    'ltg': Result := 'ltg/index';
+    'lv': Result := 'lv/index';
+    'lv_LV': Result := 'lv/index';
+    'mk': Result := 'mk/index';
+    'mn': Result := 'mn/index';
+    'mn_MN': Result := 'mn/index';
+    'nb': Result := 'nb/index';
+    'nb_NO': Result := 'nb/index';
+    'nds': Result := 'nds/index';
+    'ne': Result := 'ne/index';
+    'ne_NP': Result := 'ne/index';
+    'nl': Result := 'nl/index';
+    'nl_NL': Result := 'nl/index';
+    'nn': Result := 'nn/index';
+    'nn_NO': Result := 'nn/index';
+    'no': Result := 'nb/index';
+    'oc': Result := 'oc/index';
+    'oc_FR': Result := 'oc/index';
+    'pl': Result := 'pl/index';
+    'pl_PL': Result := 'pl/index';
+    'pt': Result := 'pt-PT/index';
+    'pt_PT': Result := 'pt-PT/index';
+    'pt_BR': Result := 'pt/index';
+    'ro': Result := 'ro/index';
+    'ro_RO': Result := 'ro/index';
+    'ru': Result := 'ru/index';
+    'ru_RU': Result := 'ru/index';
+    'rw': Result := 'rw/index';
+    'sk': Result := 'sk/index';
+    'sk_SK': Result := 'sk/index';
+    'sl': Result := 'sl/index';
+    'sl_SI': Result := 'sl/index';
+    'sr': Result := 'sr/index';
+    'sr_Latn': Result := 'sr-Latn/index';
+    'sr-Latn': Result := 'sr-Latn/index';
+    'sv': Result := 'sv/index';
+    'sv_SE': Result := 'sv/index';
+    'sv_FI': Result := 'sv-FI/index';
+    'tk': Result := 'tk/index';
+    'tlh': Result := 'tlh/index';
+    'tlh-Latn': Result := 'tlh-Latn/index';
+    'tr': Result := 'tr/index';
+    'tr_TR': Result := 'tr/index';
+    'uk': Result := 'uk/index';
+    'uk_UA': Result := 'uk/index';
+    'vi': Result := 'vi/index';
+    'vi_VN': Result := 'vi/index';
     else
       Result := '';
   end;
