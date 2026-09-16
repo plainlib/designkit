@@ -877,7 +877,12 @@ begin
     Exit;
   end;
 
-  InterlockedExchange(FCancelRequested, 0);
+  // Only reset when there is no running check; when a check is running
+  // we already set the cancel flag above and the new request will be
+  // picked up by OnBackgroundDone through FPendingCheck.
+  if not FChecking then
+    InterlockedExchange(FCancelRequested, 0);
+
   FChecking := True;
   FCheckText := FRichMemo.Text;
   // Give the Hunspell engine a pointer to the cancellation flag so that long
