@@ -8,8 +8,8 @@ All components are installed on the **Common Controls** tab of the component pal
 - **Lazarus** (tested with 4.8) / **Free Pascal Compiler** 3.2.2 or newer.
 - **LCL** – included with Lazarus.
 - **IDEIntf** – included with Lazarus.
-- **[RichMemoPackage](https://github.com/plainlib/richmemo)** – extended `TRichMemo` component with clipboard and undo helpers (available in the [plainlib](https://github.com/plainlib) repository).
-- **[Helpers](https://github.com/plainlib/helpers)** – common utility units used by the spell‑checker (also available in plainlib).
+- **[RichMemoPackage](https://github.com/plainlib/richmemo)** – a fork of the original `TRichMemo` component (available in plainlib).
+- **[Helpers](https://github.com/plainlib/helpers)** – common utility units used by the spell‑checker (available in plainlib).
 - **[Toolkit](https://github.com/plainlib/toolkit)** – general‑purpose utility classes (available in plainlib).
 - **[RichKit](https://github.com/plainlib/richkit)** – additional rich‑text utilities (available in plainlib).
 - **Windows 8 or later** is required only for the native `WinSpellChecker` backend. The **HunSpell** backend works on all platforms (Windows, Linux, macOS) and does not need any OS‑specific API.
