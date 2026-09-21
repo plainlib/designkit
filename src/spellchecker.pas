@@ -31,7 +31,8 @@ uses
   {$ENDIF}
   OneShotThread,
   OneShotTimer,
-  Downloader;
+  Downloader,
+  stringhelper;
 
 type
   // Event fired after spell check results have been applied to the RichMemo
@@ -431,13 +432,13 @@ begin
     // grid reuses a single cell editor for different rows). If the text no
     // longer matches the last check snapshot, run a fresh check so the
     // underlines follow the new content.
-    if Assigned(AValue) and (AValue.Text <> FCheckText) and FEnabled and not (csDesigning in ComponentState) and
-      not (csLoading in ComponentState) then
+    if Assigned(AValue) and (not AValue.Text.EqualNormalized(FCheckText)) and FEnabled and not
+      (csDesigning in ComponentState) and not (csLoading in ComponentState) then
       CheckNow;
     Exit;
   end;
 
-  ReuseErrors := Assigned(AValue) and Assigned(FRichMemo) and (FCheckText <> '') and (AValue.Text = FCheckText);
+  ReuseErrors := Assigned(AValue) and Assigned(FRichMemo) and (FCheckText <> '') and (AValue.Text.EqualNormalized(FCheckText));
 
   if Assigned(FRichMemo) then
   begin
@@ -489,6 +490,9 @@ begin
       FInternalChange := True;
       try
         TSpell.ApplyErrors(FSpellChecker, FLastErrors);
+
+        if Assigned(FOnSpellCheckComplete) then
+          FOnSpellCheckComplete(Self, Length(FLastErrors));
       finally
         FInternalChange := False;
       end;
@@ -764,6 +768,12 @@ begin
   if not FRealTime or not FEnabled then Exit;
   if not Assigned(FDebounceTimer) then Exit;
 
+  // A RichMemo can fire OnChange for non-text modifications such as
+  // applying spell underline formatting. Re-check only when the text
+  // actually differs from the last snapshot.
+  if (FCheckText <> '') and FRichMemo.Text.EqualNormalized(FCheckText) then
+    Exit;
+
   // If a replacement was just done, we want immediate check, not debounced
   if FReplaceJustDone then
   begin
@@ -855,8 +865,18 @@ procedure TSpellChecker.DoDebouncedCheck(Sender: TObject);
 begin
   if Assigned(FDebounceTimer) then
     FDebounceTimer.Enabled := False;
-  if FEnabled and Assigned(FRichMemo) then
-    CheckNow;
+
+  if not FEnabled or not Assigned(FRichMemo) then
+    Exit;
+
+  // The debounce timer can be re-armed by a benign OnChange that fires
+  // after underline formatting is applied. Skip the check when the memo
+  // text still matches the last snapshot, otherwise an endless check loop
+  // would run once per CheckDelay while the user does nothing.
+  if (FCheckText <> '') and FRichMemo.Text.EqualNormalized(FCheckText) then
+    Exit;
+
+  CheckNow;
 end;
 
 procedure TSpellChecker.StartCheck;
@@ -935,7 +955,7 @@ begin
   // Text must match the snapshot taken at the last check, otherwise the stored
   // offsets would point to the wrong characters. In that case just clear
   // whatever was drawn earlier and wait for a real check.
-  if (FCheckText = '') or (ATargetMemo.Text <> FCheckText) then
+  if (FCheckText = '') or (not ATargetMemo.Text.EqualNormalized(FCheckText)) then
   begin
     RichSpellChecker.ClearSpellErrors(ATargetMemo);
     Exit;
@@ -1023,7 +1043,7 @@ begin
   if FAutoApply then
   begin
     // Skip applying if text has changed since check started
-    if FCheckText = FRichMemo.Text then
+    if FCheckText.EqualNormalized(FRichMemo.Text) then
     begin
       FRichMemo.Lines.BeginUpdate;
       FInternalChange := True;
