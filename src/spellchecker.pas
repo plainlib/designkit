@@ -415,7 +415,7 @@ begin
   // honored here. If DicPath is empty at this point we assume the user will
   // configure the dictionary source explicitly in Form.OnCreate, and the
   // corresponding setter will trigger the load.
-  if (FEngine = seHunspell) and (FDicPath <> '') then
+  if FEnabled and (FEngine = seHunspell) and (FDicPath <> '') then
     LoadHunDictionaryForLanguage;
 
   if FEnabled and Assigned(FRichMemo) then
@@ -501,7 +501,17 @@ begin
       ClearUnderlines;
 
     if not ReuseErrors and FEnabled and not (csDesigning in ComponentState) and not (csLoading in ComponentState) then
-      CheckNow;
+    begin
+      // Coalesce rapid memo reassignments into a single check
+      if Assigned(FDebounceTimer) then
+      begin
+        FDebounceTimer.Enabled := False;
+        FDebounceTimer.Interval := 150;
+        FDebounceTimer.Enabled := True;
+      end
+      else
+        CheckNow;
+    end;
   end;
 end;
 
@@ -513,8 +523,8 @@ begin
   // from (DicPath or DicUrl was assigned by user code, not by LFM). This
   // prevents an unwanted URL download when Language is assigned before
   // DicPath in Form.Create.
-  if (FEngine = seHunspell) and FDictionaryConfigured and (FLanguage <> '') and not (csDesigning in ComponentState) and
-    not (csLoading in ComponentState) then
+  if FEnabled and (FEngine = seHunspell) and FDictionaryConfigured and (FLanguage <> '') and not
+    (csDesigning in ComponentState) and not (csLoading in ComponentState) then
     LoadHunDictionaryForLanguage;
   if FEnabled and Assigned(FRichMemo) and not (csLoading in ComponentState) then
     CheckNow;
@@ -527,6 +537,11 @@ begin
     FEnabled := AValue;
     if FEnabled then
     begin
+      // Lazily load the Hunspell dictionary when the component is enabled
+      if (FEngine = seHunspell) and (not Assigned(FHunSpellChecker)) and FDictionaryConfigured and
+        (FLanguage <> '') and not (csDesigning in ComponentState) and not (csLoading in ComponentState) then
+        LoadHunDictionaryForLanguage;
+
       if Assigned(FRichMemo) and not (csLoading in ComponentState) then
         CheckNow;
     end
@@ -650,7 +665,7 @@ begin
   if FEngine <> AValue then
   begin
     FEngine := AValue;
-    if FEngine = seHunspell then
+    if (FEngine = seHunspell) and FEnabled then
     begin
       if not Assigned(FHunSpellChecker) and not FLoadingDictionary then
       begin
@@ -677,8 +692,8 @@ begin
   if not (csLoading in ComponentState) then
     FDictionaryConfigured := True;
 
-  if FDictionaryConfigured and (FEngine = seHunspell) and (FLanguage <> '') and not (csDesigning in ComponentState) and
-    not (csLoading in ComponentState) then
+  if FEnabled and FDictionaryConfigured and (FEngine = seHunspell) and (FLanguage <> '') and not
+    (csDesigning in ComponentState) and not (csLoading in ComponentState) then
     LoadHunDictionaryForLanguage;
 end;
 
@@ -691,8 +706,8 @@ begin
   if not (csLoading in ComponentState) then
     FDictionaryConfigured := True;
 
-  if FDictionaryConfigured and (FEngine = seHunspell) and (FLanguage <> '') and not (csDesigning in ComponentState) and
-    not (csLoading in ComponentState) then
+  if FEnabled and FDictionaryConfigured and (FEngine = seHunspell) and (FLanguage <> '') and not
+    (csDesigning in ComponentState) and not (csLoading in ComponentState) then
     LoadHunDictionaryForLanguage;
 end;
 
