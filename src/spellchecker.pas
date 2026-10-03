@@ -141,8 +141,11 @@ type
     procedure OnHunDictionaryLoaded;
     procedure StartDictionaryDownload(const LangCode: string);
     function BuildDictURL(const Template, CandidateCode, Ext: string): string;
+    function NormalizeFlatCode(const Code: string): string;
+    function GetFlatDictByCode(const Code: string): string;
     function GetLibreOfficePathByCode(const Code: string): string;
     function GetWooormPathByCode(const Code: string): string;
+    function ResolveRelativeDicPath(const APath: string): string;
     procedure OnDictionaryDownloadComplete(Sender: TObject; AStreams: array of TMemoryStream; AErrors: array of string);
   protected
     procedure Notification(AComponent: TComponent; Operation: TOperation); override;
@@ -210,10 +213,17 @@ type
     // Select spell checking engine: Windows (default) or Hunspell
     property Engine: TSpellEngine read FEngine write SetEngine default seWindows;
 
-    // Directory path for Hunspell dictionaries (.aff and .dic). Can be absolute or relative to the application folder.
+    // Directory path for Hunspell dictionaries (.aff and .dic). Can be absolute
+    // or relative to the application folder. Supports one placeholder:
+    //   {temp} - replaced by the system temporary directory. Use it when the
+    //   dictionary should be cached outside the project, for example
+    //   '{temp}\dic' or '{temp}\myapp\dic'. Windows cleans the temp folder
+    //   automatically after some time, so the dictionary may be re-downloaded.
     property DicPath: string read FDicPath write SetDicPath;
     // URL template for downloading Hunspell dictionaries. Supports placeholders:
     //   {dict}      - replaced by language code (e.g. en_US) and then .aff/.dic appended
+    //   {plaindict} - replaced by the flat dictionary base name
+    //   https://raw.githubusercontent.com/plainlib/dictionaries/main/{plaindict}
     //   {libredict} - replaced by path inside LibreOffice dictionaries repository
     //   https://raw.githubusercontent.com/LibreOffice/dictionaries/master/{libredict}
     //   {wooormdict} - replaced by path inside Wooormdict dictionaries repository
@@ -287,7 +297,7 @@ begin
   FLoadAffStream := nil;
   FLoadDicStream := nil;
   FDicPath := '';
-  FDicUrl := 'https://raw.githubusercontent.com/LibreOffice/dictionaries/master/{libredict}';
+  FDicUrl := 'https://raw.githubusercontent.com/plainlib/dictionaries/main/{plaindict}';
   FDownloading := False;
   FDownloadLang := '';
   FLanguage := ''; // Initialize language to empty
@@ -1161,10 +1171,7 @@ begin
   if FDicPath <> '' then
   begin
     // Resolve relative path to application directory
-    basePath := FDicPath;
-    if not IsPathAbsolute(basePath) then
-      basePath := ExtractFilePath(ParamStr(0)) + basePath;
-    basePath := IncludeTrailingPathDelimiter(basePath);
+    basePath := IncludeTrailingPathDelimiter(ResolveRelativeDicPath(FDicPath));
 
     candidates := HunspellDictionaryCandidates(FLanguage);
 
@@ -1335,6 +1342,7 @@ end;
 function TSpellChecker.BuildDictURL(const Template, CandidateCode, Ext: string): string;
 var
   url: string;
+  flatPath: string;
   librePath: string;
   wooormPath: string;
 begin
@@ -1344,6 +1352,13 @@ begin
   begin
     // Replace {dict} with candidate code + extension
     url := StringReplace(url, '{dict}', CandidateCode + '.' + Ext, [rfReplaceAll]);
+  end
+  else if Pos('{plaindict}', url) > 0 then
+  begin
+    flatPath := GetFlatDictByCode(CandidateCode);
+    if flatPath = '' then
+      Exit('');
+    url := StringReplace(url, '{plaindict}', flatPath + '.' + Ext, [rfReplaceAll]);
   end
   else if Pos('{libredict}', url) > 0 then
   begin
@@ -1367,6 +1382,219 @@ begin
   end;
 
   Result := url;
+end;
+
+function TSpellChecker.NormalizeFlatCode(const Code: string): string;
+var
+  S, First, Second: string;
+  P, Sep: integer;
+begin
+  // Trim and drop locale suffix: ru_RU.UTF-8 -> ru_RU
+  S := Trim(Code);
+  if S = '' then
+  begin
+    Result := '';
+    Exit;
+  end;
+
+  P := Pos('.', S);
+  if P > 0 then
+    S := Copy(S, 1, P - 1);
+
+  // Find separator, either '_' or '-'
+  Sep := Pos('_', S);
+  if Sep = 0 then
+    Sep := Pos('-', S);
+
+  if Sep = 0 then
+  begin
+    // Language only, two or three letters
+    Result := LowerCase(S);
+    Exit;
+  end;
+
+  First := LowerCase(Copy(S, 1, Sep - 1));
+  Second := Copy(S, Sep + 1, MaxInt);
+
+  // If the region part is exactly two letters, uppercase it (ru_RU, en-us)
+  if Length(Second) = 2 then
+    Second := UpperCase(Second);
+
+  Result := First + '_' + Second;
+end;
+
+function TSpellChecker.GetFlatDictByCode(const Code: string): string;
+var
+  C: string;
+begin
+  // Returns base file name (without extension) in the flat dic folder
+  // for the given language code. Caller appends '.aff' or '.dic'.
+  // Input may use '-' or '_' and may carry a locale suffix like '.UTF-8'.
+  C := NormalizeFlatCode(Code);
+
+  case C of
+    // A
+    'af', 'af_ZA': Result := 'af_ZA';
+    'an', 'an_ES': Result := 'an_ES';
+    'ar': Result := 'ar';
+    'as', 'as_IN': Result := 'as_IN';
+
+    // B
+    'be', 'be_BY': Result := 'be_BY';
+    'be_official': Result := 'be-official';
+    'bg', 'bg_BG': Result := 'bg_BG';
+    'bn', 'bn_BD': Result := 'bn_BD';
+    'bo': Result := 'bo';
+    'br', 'br_FR': Result := 'br_FR';
+    'bs', 'bs_BA': Result := 'bs_BA';
+
+    // C
+    'ca': Result := 'ca';
+    'ca_valencia': Result := 'ca-valencia';
+    'ckb': Result := 'ckb';
+    'cs', 'cs_CZ': Result := 'cs_CZ';
+    'cy': Result := 'cy';
+
+    // D
+    'da', 'da_DK': Result := 'da_DK';
+    'de', 'de_DE', 'de_DE_frami': Result := 'de_DE_frami';
+    'de_AT', 'de_AT_frami': Result := 'de_AT_frami';
+    'de_CH', 'de_CH_frami': Result := 'de_CH_frami';
+
+    // E
+    'el', 'el_GR': Result := 'el_GR';
+    'el_polyton': Result := 'el-polyton';
+    'en', 'en_US': Result := 'en_US';
+    'en_AU': Result := 'en_AU';
+    'en_CA': Result := 'en_CA';
+    'en_GB': Result := 'en_GB';
+    'en_ZA': Result := 'en_ZA';
+    'eo': Result := 'eo';
+    'es', 'es_ES': Result := 'es_ES';
+    'es_ANY': Result := 'es_ANY';
+    'es_AR': Result := 'es_AR';
+    'es_BO': Result := 'es_BO';
+    'es_CL': Result := 'es_CL';
+    'es_CO': Result := 'es_CO';
+    'es_CR': Result := 'es_CR';
+    'es_CU': Result := 'es_CU';
+    'es_DO': Result := 'es_DO';
+    'es_EC': Result := 'es_EC';
+    'es_GQ': Result := 'es_GQ';
+    'es_GT': Result := 'es_GT';
+    'es_HN': Result := 'es_HN';
+    'es_MX': Result := 'es_MX';
+    'es_NI': Result := 'es_NI';
+    'es_PA': Result := 'es_PA';
+    'es_PE': Result := 'es_PE';
+    'es_PH': Result := 'es_PH';
+    'es_PR': Result := 'es_PR';
+    'es_PY': Result := 'es_PY';
+    'es_SV': Result := 'es_SV';
+    'es_US': Result := 'es_US';
+    'es_UY': Result := 'es_UY';
+    'es_VE': Result := 'es_VE';
+    'et', 'et_EE': Result := 'et_EE';
+    'eu': Result := 'eu';
+
+    // F
+    'fa', 'fa_IR': Result := 'fa-IR';
+    'fi', 'fi_FI': Result := 'fi_FI';
+    'fo': Result := 'fo';
+    'fr': Result := 'fr';
+    'fur': Result := 'fur';
+    'fy': Result := 'fy';
+
+    // G
+    'ga': Result := 'ga';
+    'gd', 'gd_GB': Result := 'gd_GB';
+    'gl', 'gl_ES': Result := 'gl_ES';
+    'gug': Result := 'gug';
+    'gu', 'gu_IN': Result := 'gu_IN';
+
+    // H
+    'he', 'he_IL': Result := 'he_IL';
+    'hi', 'hi_IN': Result := 'hi_IN';
+    'hr', 'hr_HR': Result := 'hr_HR';
+    'hu', 'hu_HU': Result := 'hu_HU';
+    'hy': Result := 'hy';
+    'hyw': Result := 'hyw';
+
+    // I
+    'ia': Result := 'ia';
+    'id', 'id_ID': Result := 'id_ID';
+    'ie': Result := 'ie';
+    'is': Result := 'is';
+    'it', 'it_IT': Result := 'it_IT';
+
+    // K
+    'ka': Result := 'ka';
+    'kmr', 'kmr_Latn': Result := 'kmr_Latn';
+    'kn', 'kn_IN': Result := 'kn_IN';
+    'ko', 'ko_KR': Result := 'ko_KR';
+
+    // L
+    'la': Result := 'la';
+    'lb': Result := 'lb';
+    'lo', 'lo_LA': Result := 'lo_LA';
+    'lt': Result := 'lt';
+    'ltg': Result := 'ltg';
+    'lv', 'lv_LV': Result := 'lv_LV';
+
+    // M
+    'mk': Result := 'mk';
+    'mn', 'mn_MN': Result := 'mn_MN';
+    'mr', 'mr_IN': Result := 'mr_IN';
+
+    // N
+    'nb', 'nb_NO', 'no': Result := 'nb_NO';
+    'nds': Result := 'nds';
+    'ne', 'ne_NP': Result := 'ne_NP';
+    'nl', 'nl_NL': Result := 'nl_NL';
+    'nn', 'nn_NO': Result := 'nn_NO';
+
+    // O
+    'oc', 'oc_FR': Result := 'oc_FR';
+    'or', 'or_IN': Result := 'or_IN';
+
+    // P
+    'pa', 'pa_IN': Result := 'pa_IN';
+    'pl', 'pl_PL': Result := 'pl_PL';
+    'pt', 'pt_PT': Result := 'pt_PT';
+    'pt_BR': Result := 'pt_BR';
+
+    // R
+    'ro', 'ro_RO': Result := 'ro_RO';
+    'ru', 'ru_RU': Result := 'ru_RU';
+    'rw': Result := 'rw';
+
+    // S
+    'sa', 'sa_IN': Result := 'sa_IN';
+    'si', 'si_LK': Result := 'si_LK';
+    'sk', 'sk_SK': Result := 'sk_SK';
+    'sl', 'sl_SI': Result := 'sl_SI';
+    'sq', 'sq_AL': Result := 'sq_AL';
+    'sr': Result := 'sr';
+    'sr_Latn': Result := 'sr-Latn';
+    'sv', 'sv_SE': Result := 'sv_SE';
+    'sv_FI': Result := 'sv_FI';
+    'sw', 'sw_TZ': Result := 'sw_TZ';
+
+    // T
+    'ta', 'ta_IN': Result := 'ta_IN';
+    'te', 'te_IN': Result := 'te_IN';
+    'th', 'th_TH': Result := 'th_TH';
+    'tk': Result := 'tk';
+    'tlh': Result := 'tlh';
+    'tlh_Latn': Result := 'tlh-Latn';
+    'tr', 'tr_TR': Result := 'tr_TR';
+
+    // U, V
+    'uk', 'uk_UA': Result := 'uk_UA';
+    'vi', 'vi_VN': Result := 'vi_VN';
+    else
+      Result := '';
+  end;
 end;
 
 function TSpellChecker.GetLibreOfficePathByCode(const Code: string): string;
@@ -1642,6 +1870,35 @@ begin
   end;
 end;
 
+function TSpellChecker.ResolveRelativeDicPath(const APath: string): string;
+var
+  P: string;
+begin
+  // Return an absolute path for DicPath. The {temp} placeholder is expanded
+  // to the system temporary directory and takes precedence over the design
+  // versus runtime distinction below. Directory separators inside the
+  // resulting path are normalized for the current platform, so the same
+  // property value works on Windows, Linux and macOS. Without the
+  // placeholder relative paths are resolved against the folder of the
+  // executable at runtime, while at design time the system temp directory
+  // is used to keep dictionaries out of the Lazarus installation and the
+  // user project folder.
+  if Pos('{temp}', LowerCase(APath)) > 0 then
+  begin
+    P := StringReplace(APath, '{temp}', ExcludeTrailingPathDelimiter(GetTempDir),
+      [rfReplaceAll, rfIgnoreCase]);
+    Result := SetDirSeparators(P);
+    Exit;
+  end;
+
+  if IsPathAbsolute(APath) then
+    Result := APath
+  else if csDesigning in ComponentState then
+    Result := IncludeTrailingPathDelimiter(GetTempDir) + APath
+  else
+    Result := ExtractFilePath(ParamStr(0)) + APath;
+end;
+
 procedure TSpellChecker.OnDictionaryDownloadComplete(Sender: TObject; AStreams: array of TMemoryStream; AErrors: array of string);
 var
   affFileName, dicFileName: string;
@@ -1665,13 +1922,10 @@ begin
   if (AStreams[0] = nil) or (AStreams[1] = nil) then Exit;
   if (AStreams[0].Size = 0) or (AStreams[1].Size = 0) then Exit;
 
-  // Attempt to cache to DicPath
   if FDicPath <> '' then
   begin
-    basePath := FDicPath;
-    if not IsPathAbsolute(basePath) then
-      basePath := ExtractFilePath(ParamStr(0)) + basePath;
-    basePath := IncludeTrailingPathDelimiter(basePath);
+    // Resolve relative path to application directory
+    basePath := IncludeTrailingPathDelimiter(ResolveRelativeDicPath(FDicPath));
 
     // Ensure directory exists
     if ForceDirectories(basePath) then
