@@ -409,14 +409,17 @@ begin
     FRichMemo.OnContextPopup := @OnRichMemoContextPopup;
   end;
 
-  // Auto-load only when the LFM already specified a non-empty DicPath.
+  // Auto-load when the LFM already specified a Hunspell engine and a language.
   // Loaded is called before Form.OnCreate, so anything the user plans to set
-  // in Form.OnCreate (including DicPath := '' for URL-only mode) cannot be
-  // honored here. If DicPath is empty at this point we assume the user will
-  // configure the dictionary source explicitly in Form.OnCreate, and the
-  // corresponding setter will trigger the load.
-  if FEnabled and (FEngine = seHunspell) and (FDicPath <> '') then
+  // in Form.OnCreate cannot be honored here. If Language is empty at this
+  // point we assume the user will configure the component in Form.OnCreate,
+  // and the corresponding setters will trigger the load. Marking the source
+  // as configured here also lets later Language changes trigger a reload.
+  if FEnabled and (FEngine = seHunspell) and (FLanguage <> '') then
+  begin
+    FDictionaryConfigured := True;
     LoadHunDictionaryForLanguage;
+  end;
 
   if FEnabled and Assigned(FRichMemo) then
     CheckNow;
@@ -500,10 +503,12 @@ begin
     else
       ClearUnderlines;
 
-    if not ReuseErrors and FEnabled and not (csDesigning in ComponentState) and not (csLoading in ComponentState) then
+    if not ReuseErrors and FEnabled and not (csLoading in ComponentState) then
     begin
-      // Coalesce rapid memo reassignments into a single check
-      if Assigned(FDebounceTimer) then
+      // Coalesce rapid memo reassignments into a single check in runtime,
+      // where the debounce timer exists and hooks are installed. In the
+      // designer check immediately so the preview shows underlines.
+      if Assigned(FDebounceTimer) and not (csDesigning in ComponentState) then
       begin
         FDebounceTimer.Enabled := False;
         FDebounceTimer.Interval := 150;
@@ -519,12 +524,25 @@ procedure TSpellChecker.SetLanguage(const AValue: string);
 begin
   if FLanguage = AValue then Exit;
   FLanguage := AValue;
+  // In the designer the user expects an immediate reaction, so arm the
+  // dictionary source as soon as the language is set there.
+  if csDesigning in ComponentState then
+    FDictionaryConfigured := True;
+  // When the language is cleared, unload any Hunspell dictionary that was
+  // loaded for the previous language. Otherwise the old dictionary stays in
+  // memory and keeps checking text in its language even though Language is
+  // empty, which is confusing.
+  if (FEngine = seHunspell) and (FLanguage = '') and (not (csLoading in ComponentState)) then
+  begin
+    UnloadHunDictionary;
+    ClearErrors;
+    Exit;
+  end;
   // Only load when the user has already decided where the dictionary comes
   // from (DicPath or DicUrl was assigned by user code, not by LFM). This
   // prevents an unwanted URL download when Language is assigned before
   // DicPath in Form.Create.
-  if FEnabled and (FEngine = seHunspell) and FDictionaryConfigured and (FLanguage <> '') and not
-    (csDesigning in ComponentState) and not (csLoading in ComponentState) then
+  if FEnabled and (FEngine = seHunspell) and FDictionaryConfigured and (FLanguage <> '') and not (csLoading in ComponentState) then
     LoadHunDictionaryForLanguage;
   if FEnabled and Assigned(FRichMemo) and not (csLoading in ComponentState) then
     CheckNow;
@@ -671,8 +689,7 @@ begin
       begin
         // Only load when the user has already decided where the dictionary
         // comes from (DicPath or DicUrl was assigned by user code).
-        if (FLanguage <> '') and FDictionaryConfigured and not (csDesigning in ComponentState) and not
-          (csLoading in ComponentState) then
+        if (FLanguage <> '') and FDictionaryConfigured and not (csLoading in ComponentState) then
           LoadHunDictionaryForLanguage;
       end;
     end;
@@ -692,8 +709,7 @@ begin
   if not (csLoading in ComponentState) then
     FDictionaryConfigured := True;
 
-  if FEnabled and FDictionaryConfigured and (FEngine = seHunspell) and (FLanguage <> '') and not
-    (csDesigning in ComponentState) and not (csLoading in ComponentState) then
+  if FEnabled and FDictionaryConfigured and (FEngine = seHunspell) and (FLanguage <> '') and not (csLoading in ComponentState) then
     LoadHunDictionaryForLanguage;
 end;
 
@@ -706,8 +722,7 @@ begin
   if not (csLoading in ComponentState) then
     FDictionaryConfigured := True;
 
-  if FEnabled and FDictionaryConfigured and (FEngine = seHunspell) and (FLanguage <> '') and not
-    (csDesigning in ComponentState) and not (csLoading in ComponentState) then
+  if FEnabled and FDictionaryConfigured and (FEngine = seHunspell) and (FLanguage <> '') and not (csLoading in ComponentState) then
     LoadHunDictionaryForLanguage;
 end;
 
@@ -929,8 +944,7 @@ end;
 
 procedure TSpellChecker.CheckNow;
 begin
-  // Do not run checks in design-time or during loading
-  if (csDesigning in ComponentState) and (FEngine <> seWindows) then Exit;
+  // Skip while the component is being loaded from the .lfm file
   if csLoading in ComponentState then Exit;
 
   if not FEnabled or not Assigned(FRichMemo) or not Assigned(FSpellChecker) then
@@ -940,6 +954,12 @@ begin
   if (FEngine = seHunspell) and ((FHunSpellChecker = nil) or (not FHunDictionaryLoaded)) then
   begin
     ClearErrors;
+    // Request the dictionary load when the source has already been configured
+    // by the user. This covers runtime engine changes and memo reassignments
+    // that happen before the dictionary was ever requested. OnHunDictionaryLoaded
+    // will call CheckNow once the load finishes, so the pending check still runs.
+    if (not FLoadingDictionary) and (not FDownloading) and (FLanguage <> '') and FDictionaryConfigured then
+      LoadHunDictionaryForLanguage;
     Exit;
   end;
 
@@ -1103,7 +1123,6 @@ var
   basePath: string;
   found: boolean;
 begin
-  if csDesigning in ComponentState then Exit;
   if csLoading in ComponentState then Exit;
 
   // Record that a reload has been requested. If a load is already in progress
