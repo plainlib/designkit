@@ -74,7 +74,6 @@ type
     FChunkedCheck: boolean;           // Enable incremental chunk based checking
     FChunkSize: integer;              // Size of one chunk in characters
     FAppliedErrorCount: integer;      // Number of errors already drawn in chunked mode
-    FFirstChunkApplied: boolean;      // False until the first chunk of a new check is drawn
 
     // Async dictionary loading state
     FLoadThread: TThread;              // Thread handle used to wait on a pending async load
@@ -280,6 +279,15 @@ type
 
 implementation
 
+{$IFDEF WINDOWS}
+const
+  // RichEdit messages used to save and restore the scroll position while
+  // incremental underlines are drawn. They are not exposed by the Windows
+  // unit, and RichSpellChecker declares its own copies privately.
+  EM_GETSCROLLPOS = WM_USER + 221;
+  EM_SETSCROLLPOS = WM_USER + 222;
+{$ENDIF}
+
 function IsPathAbsolute(const Path: string): boolean;
 begin
   {$IFDEF WINDOWS}
@@ -341,7 +349,6 @@ begin
   FChunkedCheck := False;
   FChunkSize := 16384;
   FAppliedErrorCount := 0;
-  FFirstChunkApplied := True;
 
   // Default integration settings
   FPopupMenu := nil;
@@ -1011,14 +1018,14 @@ begin
 
   FChecking := True;
 
-  // Chunked mode draws errors incrementally. Previous underlines are
-  // intentionally left in place here: they stay visible until the first
-  // chunk of the new check is ready, which matches the way the non chunked
-  // path behaves where underlines only refresh once the whole check is done.
+  // Chunked mode accumulates errors and draws them incrementally on top of
+  // the existing underlines. Previous underlines are intentionally left in
+  // place: wiping them here would make the whole document blink while the
+  // background pass walks through it. The final atomic replace happens in
+  // OnBackgroundDone through TSpell.ApplyErrors.
   if FChunkedCheck and (FChunkSize > 0) and (Length(FRichMemo.Text) > FChunkSize) then
   begin
     FAppliedErrorCount := 0;
-    FFirstChunkApplied := False;
     SetLength(FLastErrors, 0);
   end;
 
@@ -1115,7 +1122,8 @@ var
   Ranges: array of record
     StartPos: integer;
     EndPos: integer;
-  end = nil;
+    end
+  = nil;
   r: integer = 0;
 begin
   SetLength(FLastErrors, 0);
@@ -1179,8 +1187,7 @@ begin
       // extension is capped to avoid scanning megabytes when no whitespace
       // exists for a long time (for example a base64 blob in the text).
       MaxExtend := ChunkStart + FChunkSize * 4;
-      while (ChunkEnd < Ranges[r].EndPos) and (ChunkEnd < MaxExtend) and
-            not (FCheckText[ChunkEnd] in [' ', #9, #10, #13]) do
+      while (ChunkEnd < Ranges[r].EndPos) and (ChunkEnd < MaxExtend) and not (FCheckText[ChunkEnd] in [' ', #9, #10, #13]) do
         Inc(ChunkEnd);
       ChunkText := Copy(FCheckText, ChunkStart, ChunkEnd - ChunkStart + 1);
 
@@ -1219,8 +1226,12 @@ end;
 procedure TSpellChecker.ApplyPartialErrors;
 var
   i: integer = 0;
+  {$IFDEF WINDOWS}
+  scrollPos: TPoint;
+  OldSelStart, OldSelLength: integer;
+  {$ENDIF}
 begin
-  if FDestroying or (FRichMemo = nil) or (FSpellChecker = nil) then
+  if FDestroying or (FRichMemo = nil) then
     Exit;
   // Skip drawing if the memo text has changed since the snapshot was taken,
   // a fresh check will redraw everything anyway. Length is compared first
@@ -1229,37 +1240,51 @@ begin
     Exit;
   if not FCheckText.EqualNormalized(FRichMemo.Text) then
     Exit;
+  if FAppliedErrorCount >= Length(FLastErrors) then
+    Exit;
 
-  // Batching via BeginUpdate/EndUpdate suppresses per-error repaints and
-  // applies all new underlines in a single WM_SETREDRAW window. EndUpdate
-  // is incremental now, so it redraws only the errors added in this chunk
-  // and the total cost stays linear across the whole document.
-  FSpellChecker.BeginUpdate;
-  FRichMemo.Lines.BeginUpdate;
+  // Draw the new underlines directly on the memo, without touching the
+  // error list of the internal checker. Existing underlines from the
+  // previous run stay visible, and only the newly found errors are added
+  // on top. The final atomic replace in OnBackgroundDone rebuilds the
+  // whole list in one batch, so stale entries disappear without any
+  // intermediate wipe.
   FInternalChange := True;
   try
-    // On the very first chunk of a new check, drop stale underlines left
-    // over from the previous run. Doing it here, inside the batch, keeps
-    // the previous highlights on screen until fresh results actually exist.
-    if not FFirstChunkApplied then
-    begin
-      FSpellChecker.Clear;
-      FFirstChunkApplied := True;
+    {$IFDEF WINDOWS}
+    OldSelStart := FRichMemo.SelStart;
+    OldSelLength := FRichMemo.SelLength;
+    {$HINTS OFF}
+    SendMessage(FRichMemo.Handle, EM_GETSCROLLPOS, 0, LPARAM(PtrInt(@scrollPos)));
+    {$HINTS ON}
+    SendMessage(FRichMemo.Handle, WM_SETREDRAW, 0, 0);
+    try
+      for i := FAppliedErrorCount to High(FLastErrors) do
+        RichSpellChecker.DrawSpellUnderline(FRichMemo,
+          FLastErrors[i].Offset,
+          FLastErrors[i].Length,
+          FLastErrors[i].Color);
+    finally
+      FRichMemo.SelStart := OldSelStart;
+      FRichMemo.SelLength := OldSelLength;
+      {$HINTS OFF}
+      SendMessage(FRichMemo.Handle, EM_SETSCROLLPOS, 0, LPARAM(PtrInt(@scrollPos)));
+      {$HINTS ON}
+      SendMessage(FRichMemo.Handle, WM_SETREDRAW, 1, 0);
+      FRichMemo.Invalidate;
     end;
-
+    {$ELSE}
     for i := FAppliedErrorCount to High(FLastErrors) do
-      FSpellChecker.AddError(
+      RichSpellChecker.DrawSpellUnderline(FRichMemo,
         FLastErrors[i].Offset,
         FLastErrors[i].Length,
-        FLastErrors[i].Message,
-        FLastErrors[i].Replacements,
         FLastErrors[i].Color);
-    FAppliedErrorCount := Length(FLastErrors);
+    {$ENDIF}
   finally
     FInternalChange := False;
-    FRichMemo.Lines.EndUpdate;
-    FSpellChecker.EndUpdate;
   end;
+
+  FAppliedErrorCount := Length(FLastErrors);
 end;
 
 function TSpellChecker.GetVisibleTextRange(out AStart, AEnd: integer): boolean;
@@ -1364,19 +1389,17 @@ begin
     // Skip applying if text has changed since check started
     if FCheckText.EqualNormalized(FRichMemo.Text) then
     begin
-      // In chunked mode every error was already drawn incrementally by
-      // ApplyPartialErrors, so a full redraw here would be redundant. Only
-      // the non-chunked path needs the final ApplyErrors call.
-      if not (FChunkedCheck and (FChunkSize > 0) and (Length(FCheckText) > FChunkSize)) then
-      begin
-        FRichMemo.Lines.BeginUpdate;
-        FInternalChange := True;
-        try
-          TSpell.ApplyErrors(FSpellChecker, FLastErrors);
-        finally
-          FRichMemo.Lines.EndUpdate;
-          FInternalChange := False;
-        end;
+      // The final atomic replace is what removes stale underlines left
+      // over from the previous run. In chunked mode the incremental pass
+      // only added new underlines on top, so this call is required to
+      // discard everything that is no longer an error.
+      FRichMemo.Lines.BeginUpdate;
+      FInternalChange := True;
+      try
+        TSpell.ApplyErrors(FSpellChecker, FLastErrors);
+      finally
+        FRichMemo.Lines.EndUpdate;
+        FInternalChange := False;
       end;
     end;
   end;
