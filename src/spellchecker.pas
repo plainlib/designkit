@@ -22,6 +22,8 @@ uses
   ExtCtrls,
   Menus,
   LazFileUtils,
+  LazUTF8,
+  LazUnicode,
   RichMemo,
   RichSpellChecker,
   SpellUtils,
@@ -296,6 +298,46 @@ begin
             or ((Length(Path) >= 2) and (Path[1] = '\') and (Path[2] = '\'));
   {$ELSE}
   Result := (Length(Path) > 0) and (Path[1] = '/');
+  {$ENDIF}
+end;
+
+function SpellOffsetBase(const S: string; AByteLen: integer): integer;
+var
+  I: integer;
+  C: cardinal;
+begin
+  if AByteLen <= 0 then
+    Exit(0);
+
+  {$IFDEF WINDOWS}
+  Result := 0;
+  I := 1;
+  while I <= AByteLen do
+  begin
+    C := Ord(S[I]);
+    if (C and $F8) = $F0 then
+    begin
+      Inc(Result, 2);
+      Inc(I, 4);
+    end
+    else if (C and $F0) = $E0 then
+    begin
+      Inc(Result);
+      Inc(I, 3);
+    end
+    else if (C and $E0) = $C0 then
+    begin
+      Inc(Result);
+      Inc(I, 2);
+    end
+    else
+    begin
+      Inc(Result);
+      Inc(I);
+    end;
+  end;
+  {$ELSE}
+  Result := UTF8Length(PChar(S), AByteLen);
   {$ENDIF}
 end;
 
@@ -1119,6 +1161,7 @@ var
   MaxExtend: integer = 0;
   VisStart: integer = 0;
   VisEnd: integer = 0;
+  OffsetBase: integer = 0;
   Ranges: array of record
     StartPos: integer;
     EndPos: integer;
@@ -1175,6 +1218,12 @@ begin
     if Ranges[r].StartPos > Ranges[r].EndPos then
       Continue;
     ChunkStart := Ranges[r].StartPos;
+    // Compute the character offset of ChunkStart in the full text. The
+    // spell checker returns offsets in characters (UTF-16 code units on
+    // Windows), while ChunkStart is a byte position in the UTF-8 snapshot.
+    // Adding the byte offset directly would shift every underline by the
+    // number of multi-byte characters that precede the chunk.
+    OffsetBase := SpellOffsetBase(FCheckText, ChunkStart - 1);
     while ChunkStart <= Ranges[r].EndPos do
     begin
       if InterlockedCompareExchange(FCancelRequested, 0, 0) = 1 then
@@ -1201,9 +1250,14 @@ begin
       else
         ChunkErrors := TSpell.CheckText(ChunkText, FLanguage, FOptions, FAddEmptySuggestions);
 
-      // Shift offsets from chunk local to full text coordinates
+      // Shift offsets from chunk local to full text coordinates. The base
+      // is a character offset, matching the unit used by the checker.
       for i := 0 to High(ChunkErrors) do
-        ChunkErrors[i].Offset := ChunkErrors[i].Offset + (ChunkStart - 1);
+        ChunkErrors[i].Offset := ChunkErrors[i].Offset + OffsetBase;
+
+      // Update the character offset for the next iteration by counting the
+      // characters in the bytes that were just consumed.
+      Inc(OffsetBase, SpellOffsetBase(ChunkText, Length(ChunkText)));
 
       // Append to the accumulated error list. Assignment is used instead of
       // Move because TSpellError contains managed fields (string, dyn array).
