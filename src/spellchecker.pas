@@ -27,6 +27,7 @@ uses
   SpellUtils,
   HunSpellChecker,
   {$IFDEF WINDOWS}
+  Windows,
   WinSpellChecker,
   {$ENDIF}
   OneShotThread,
@@ -137,6 +138,9 @@ type
     procedure DoDebouncedCheck(Sender: TObject);
     procedure DoBackgroundCheck;
     procedure ApplyPartialErrors;     // Runs on the main thread via Synchronize
+    // Returns the 1-based character range currently visible in the memo.
+    // Falls back to the whole text when the platform cannot report it.
+    function GetVisibleTextRange(out AStart, AEnd: integer): boolean;
     procedure OnBackgroundDone;
     procedure StartCheck;
     procedure ApplyErrors(const AErrors: RichSpellChecker.TSpellErrorArray);
@@ -1106,6 +1110,13 @@ var
   Base: integer = 0;
   UseChunked: boolean = False;
   MaxExtend: integer = 0;
+  VisStart: integer = 0;
+  VisEnd: integer = 0;
+  Ranges: array of record
+    StartPos: integer;
+    EndPos: integer;
+  end = nil;
+  r: integer = 0;
 begin
   SetLength(FLastErrors, 0);
   UseChunked := FChunkedCheck and (FChunkSize > 0) and (Length(FCheckText) > FChunkSize);
@@ -1125,53 +1136,83 @@ begin
     Exit;
   end;
 
-  // Chunked path - split the text at word boundaries and emit partial
-  // results to the main thread after every chunk
   TotalLen := Length(FCheckText);
-  while ChunkStart <= TotalLen do
+
+  // Build the list of ranges in the order they should be checked. The area
+  // currently visible in the memo goes first so the user sees fresh results
+  // where he is looking. The remaining parts are then processed from the
+  // top of the document downwards to keep the perceived order predictable.
+  SetLength(Ranges, 0);
+  if GetVisibleTextRange(VisStart, VisEnd) and (VisStart > 1) and (VisStart <= TotalLen) then
   begin
-    if InterlockedCompareExchange(FCancelRequested, 0, 0) = 1 then
-      Exit;
+    if VisEnd > TotalLen then
+      VisEnd := TotalLen;
+    SetLength(Ranges, 3);
+    Ranges[0].StartPos := VisStart;
+    Ranges[0].EndPos := VisEnd;
+    Ranges[1].StartPos := 1;
+    Ranges[1].EndPos := VisStart - 1;
+    Ranges[2].StartPos := VisEnd + 1;
+    Ranges[2].EndPos := TotalLen;
+  end
+  else
+  begin
+    SetLength(Ranges, 1);
+    Ranges[0].StartPos := 1;
+    Ranges[0].EndPos := TotalLen;
+  end;
 
-    ChunkEnd := ChunkStart + FChunkSize - 1;
-    if ChunkEnd > TotalLen then
-      ChunkEnd := TotalLen;
-    // Extend to the next whitespace so a word is not split in half. The
-    // extension is capped to avoid scanning megabytes when no whitespace
-    // exists for a long time (for example a base64 blob in the text).
-    MaxExtend := ChunkStart + FChunkSize * 4;
-    while (ChunkEnd < TotalLen) and (ChunkEnd < MaxExtend) and not (FCheckText[ChunkEnd] in [' ', #9, #10, #13]) do
-      Inc(ChunkEnd);
-    ChunkText := Copy(FCheckText, ChunkStart, ChunkEnd - ChunkStart + 1);
-
-    if FEngine = seHunspell then
+  for r := 0 to High(Ranges) do
+  begin
+    if Ranges[r].StartPos > Ranges[r].EndPos then
+      Continue;
+    ChunkStart := Ranges[r].StartPos;
+    while ChunkStart <= Ranges[r].EndPos do
     begin
-      if Assigned(FHunSpellChecker) then
-        ChunkErrors := TSpell.HunCheckText(ChunkText, FHunSpellChecker, FOptions, FAddEmptySuggestions)
+      if InterlockedCompareExchange(FCancelRequested, 0, 0) = 1 then
+        Exit;
+
+      ChunkEnd := ChunkStart + FChunkSize - 1;
+      if ChunkEnd > Ranges[r].EndPos then
+        ChunkEnd := Ranges[r].EndPos;
+      // Extend to the next whitespace so a word is not split in half. The
+      // extension is capped to avoid scanning megabytes when no whitespace
+      // exists for a long time (for example a base64 blob in the text).
+      MaxExtend := ChunkStart + FChunkSize * 4;
+      while (ChunkEnd < Ranges[r].EndPos) and (ChunkEnd < MaxExtend) and
+            not (FCheckText[ChunkEnd] in [' ', #9, #10, #13]) do
+        Inc(ChunkEnd);
+      ChunkText := Copy(FCheckText, ChunkStart, ChunkEnd - ChunkStart + 1);
+
+      if FEngine = seHunspell then
+      begin
+        if Assigned(FHunSpellChecker) then
+          ChunkErrors := TSpell.HunCheckText(ChunkText, FHunSpellChecker, FOptions, FAddEmptySuggestions)
+        else
+          SetLength(ChunkErrors, 0);
+      end
       else
-        SetLength(ChunkErrors, 0);
-    end
-    else
-      ChunkErrors := TSpell.CheckText(ChunkText, FLanguage, FOptions, FAddEmptySuggestions);
+        ChunkErrors := TSpell.CheckText(ChunkText, FLanguage, FOptions, FAddEmptySuggestions);
 
-    // Shift offsets from chunk local to full text coordinates
-    for i := 0 to High(ChunkErrors) do
-      ChunkErrors[i].Offset := ChunkErrors[i].Offset + (ChunkStart - 1);
+      // Shift offsets from chunk local to full text coordinates
+      for i := 0 to High(ChunkErrors) do
+        ChunkErrors[i].Offset := ChunkErrors[i].Offset + (ChunkStart - 1);
 
-    // Append to the accumulated error list. Assignment is used instead of
-    // Move because TSpellError contains managed fields (string, dyn array).
-    Base := Length(FLastErrors);
-    SetLength(FLastErrors, Base + Length(ChunkErrors));
-    for i := 0 to High(ChunkErrors) do
-      FLastErrors[Base + i] := ChunkErrors[i];
+      // Append to the accumulated error list. Assignment is used instead of
+      // Move because TSpellError contains managed fields (string, dyn array).
+      Base := Length(FLastErrors);
+      SetLength(FLastErrors, Base + Length(ChunkErrors));
+      for i := 0 to High(ChunkErrors) do
+        FLastErrors[Base + i] := ChunkErrors[i];
 
-    // Hand off the newly found errors to the main thread for drawing.
-    // Synchronize blocks the worker, so FLastErrors is not touched
-    // concurrently while the main thread reads it.
-    if FAutoApply and not FDestroying then
-      TThread.Synchronize(nil, @ApplyPartialErrors);
+      // Hand off the newly found errors to the main thread for drawing.
+      // Synchronize blocks the worker, so FLastErrors is not touched
+      // concurrently while the main thread reads it.
+      if FAutoApply and not FDestroying then
+        TThread.Synchronize(nil, @ApplyPartialErrors);
 
-    ChunkStart := ChunkEnd + 1;
+      ChunkStart := ChunkEnd + 1;
+    end;
   end;
 end;
 
@@ -1219,6 +1260,52 @@ begin
     FRichMemo.Lines.EndUpdate;
     FSpellChecker.EndUpdate;
   end;
+end;
+
+function TSpellChecker.GetVisibleTextRange(out AStart, AEnd: integer): boolean;
+  {$IFDEF WINDOWS}
+var
+  PtTopLeft, PtBottomRight: TPoint;
+  P1, P2: Longint;
+  {$ELSE}
+var
+  P1, P2: integer;
+  {$ENDIF}
+begin
+  Result := False;
+  AStart := 1;
+  AEnd := 0;
+  if not Assigned(FRichMemo) then
+    Exit;
+
+  {$IFDEF WINDOWS}
+  // Map the top left and bottom right corners of the client area to
+  // character positions. EM_CHARFROMPOS returns 0 based indices.
+  PtTopLeft.X := 0;
+  PtTopLeft.Y := 0;
+  PtBottomRight.X := FRichMemo.ClientWidth - 1;
+  PtBottomRight.Y := FRichMemo.ClientHeight - 1;
+  {$HINTS OFF}
+  P1 := SendMessage(FRichMemo.Handle, EM_CHARFROMPOS, 0, LPARAM(PtrInt(@PtTopLeft)));
+  P2 := SendMessage(FRichMemo.Handle, EM_CHARFROMPOS, 0, LPARAM(PtrInt(@PtBottomRight)));
+  {$HINTS ON}
+  if (P1 < 0) or (P2 < 0) then
+    Exit;
+  AStart := P1 + 1;
+  AEnd := P2 + 1;
+  {$ELSE}
+  // On other platforms fall back to the cross platform RichMemo helper
+  P1 := FRichMemo.CharAtPos(0, 0);
+  P2 := FRichMemo.CharAtPos(FRichMemo.ClientWidth - 1, FRichMemo.ClientHeight - 1);
+  if (P1 < 0) or (P2 < 0) then
+    Exit;
+  AStart := P1 + 1;
+  AEnd := P2 + 1;
+  {$ENDIF}
+
+  if AEnd < AStart then
+    AEnd := AStart;
+  Result := True;
 end;
 
 procedure TSpellChecker.OnBackgroundDone;
