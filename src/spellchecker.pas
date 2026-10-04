@@ -70,6 +70,11 @@ type
     FDictionaryConfigured: boolean; // True once the user code has assigned DicPath or DicUrl
     FDictionaryPendingAction: TDictionaryPendingAction; // Deferred change while a check is running
 
+    FChunkedCheck: boolean;           // Enable incremental chunk based checking
+    FChunkSize: integer;              // Size of one chunk in characters
+    FAppliedErrorCount: integer;      // Number of errors already drawn in chunked mode
+    FFirstChunkApplied: boolean;      // False until the first chunk of a new check is drawn
+
     // Async dictionary loading state
     FLoadThread: TThread;              // Thread handle used to wait on a pending async load
     FLoadingDictionary: boolean;       // True while a dictionary is being loaded in background
@@ -124,11 +129,14 @@ type
     procedure SetEngine(AValue: TSpellEngine);
     procedure SetDicPath(const AValue: string);
     procedure SetDicUrl(const AValue: string);
+    procedure SetChunkedCheck(AValue: boolean);
+    procedure SetChunkSize(AValue: integer);
     procedure UpdateContextMenuHandler;
     procedure OnRichMemoChange(Sender: TObject);
     procedure OnRichMemoContextPopup(Sender: TObject; MousePos: TPoint; var Handled: boolean);
     procedure DoDebouncedCheck(Sender: TObject);
     procedure DoBackgroundCheck;
+    procedure ApplyPartialErrors;     // Runs on the main thread via Synchronize
     procedure OnBackgroundDone;
     procedure StartCheck;
     procedure ApplyErrors(const AErrors: RichSpellChecker.TSpellErrorArray);
@@ -179,34 +187,47 @@ type
   published
     // The RichMemo to be checked
     property RichMemo: TRichMemo read FRichMemo write SetRichMemo;
+
     // BCP-47 language tag, e.g. 'en-US' or 'ru-RU', two-letter codes are allowed
     property Language: string read FLanguage write SetLanguage;
+
     // Enable or disable spell checking
     property Enabled: boolean read FEnabled write SetEnabled default True;
+
     // Which checks to perform (spelling, comprehensive spelling). Windows engine supports both,
     // Hunspell engine only supports scoSpelling (other options are ignored).
     property Options: TSpellCheckOptions read FOptions write SetOptions default [scoSpelling];
+
     // Include errors that have no suggestions
     property AddEmptySuggestions: boolean read FAddEmptySuggestions write FAddEmptySuggestions default True;
+
     // Automatically check after text changes (with debounce)
     property RealTime: boolean read FRealTime write SetRealTime default False;
+
     // Debounce delay in milliseconds for real-time checks
     property CheckDelay: integer read FCheckDelay write SetCheckDelay default 1000;
+
     // Automatically apply underlines after check completes
     property AutoApply: boolean read FAutoApply write FAutoApply default True;
+
     // Automatically attach to RichMemo.OnContextPopup to show suggestion menu.
     // When enabled, the component handles context menu and falls back to RichMemo.PopupMenu.
     property AutoContextMenu: boolean read FAutoContextMenu write SetAutoContextMenu default True;
+
     // When True, RichMemo.OnChange fires when a word is replaced from the
     // suggestions menu. When False (default), OnChange is suppressed during
     // the replacement to avoid reentrant spell checking.
     property MemoChangeOnReplace: boolean read FMemoChangeOnReplace write SetMemoChangeOnReplace default False;
+
     // External PopupMenu to integrate suggestions into (if nil, use default behavior)
     property PopupMenu: TPopupMenu read FPopupMenu write SetPopupMenu;
+
     // If True, suggestions are placed in a submenu with caption SuggestionsCaption
     property SubMenu: boolean read FSubMenu write SetUseSubMenu default False;
+
     // Caption of the submenu when UseSubMenu is True
     property SubMenuCaption: string read FSubMenuCaption write SetSuggestionsCaption;
+
     // Index where suggestions (or submenu) will be inserted in the PopupMenu
     property SubMenuIndex: integer read FSubMenuIndex write SetSubMenuIndex default 0;
 
@@ -220,6 +241,7 @@ type
     //   '{temp}\dic' or '{temp}\myapp\dic'. Windows cleans the temp folder
     //   automatically after some time, so the dictionary may be re-downloaded.
     property DicPath: string read FDicPath write SetDicPath;
+
     // URL template for downloading Hunspell dictionaries. Supports placeholders:
     //   {dict}      - replaced by language code (e.g. en_US) and then .aff/.dic appended
     //   {plaindict} - replaced by the flat dictionary base name
@@ -231,11 +253,21 @@ type
     // If empty, no automatic download is performed.
     property DicUrl: string read FDicUrl write SetDicUrl;
 
+    // When True, large texts are checked in chunks and errors are drawn
+    // incrementally, so the user sees the top of the document highlighted
+    // while the rest is still being checked in the background.
+    property ChunkedCheck: boolean read FChunkedCheck write SetChunkedCheck default False;
+
+    // Size of a single chunk in characters (used when ChunkedCheck is True)
+    property ChunkSize: integer read FChunkSize write SetChunkSize default 16384;
+
     // Called after a check has finished and (if AutoApply) errors are applied
     property OnSpellCheckComplete: TSpellCheckCompleteEvent read FOnSpellCheckComplete write FOnSpellCheckComplete;
+
     // Called when context menu is about to be shown (before our automatic handler).
     // Set Handled to True to prevent our handling.
     property OnContextPopup: TSpellContextPopupEvent read FOnContextPopup write FOnContextPopup;
+
     // Called right after a word was replaced from the suggestions menu.
     // RichMemo.OnChange does not fire in this case, so use this event if you
     // need to react to a replacement.
@@ -302,6 +334,10 @@ begin
   FDownloadLang := '';
   FLanguage := ''; // Initialize language to empty
   FOnReplace := nil;
+  FChunkedCheck := False;
+  FChunkSize := 16384;
+  FAppliedErrorCount := 0;
+  FFirstChunkApplied := True;
 
   // Default integration settings
   FPopupMenu := nil;
@@ -736,6 +772,32 @@ begin
     LoadHunDictionaryForLanguage;
 end;
 
+procedure TSpellChecker.SetChunkedCheck(AValue: boolean);
+begin
+  if FChunkedCheck <> AValue then
+  begin
+    FChunkedCheck := AValue;
+    if FEnabled and Assigned(FRichMemo) and not (csLoading in ComponentState) then
+      CheckNow;
+  end;
+end;
+
+procedure TSpellChecker.SetChunkSize(AValue: integer);
+begin
+  // Keep a sane minimum to avoid pathological fragmentation in normal use.
+  // During design time the limit is relaxed so the property can be set to
+  // very small values for testing chunked drawing behaviour.
+  if not (csDesigning in ComponentState) and (AValue < 256) then
+    AValue := 256;
+  if AValue < 1 then AValue := 1;
+  if FChunkSize <> AValue then
+  begin
+    FChunkSize := AValue;
+    if FEnabled and FChunkedCheck and Assigned(FRichMemo) and not (csLoading in ComponentState) then
+      CheckNow;
+  end;
+end;
+
 procedure TSpellChecker.LoadHunDictionaryFromFiles(const AFFFileName, DICFileName: string);
 begin
   StartAsyncDictionaryLoadFromFiles(AFFFileName, DICFileName);
@@ -944,6 +1006,18 @@ begin
     InterlockedExchange(FCancelRequested, 0);
 
   FChecking := True;
+
+  // Chunked mode draws errors incrementally. Previous underlines are
+  // intentionally left in place here: they stay visible until the first
+  // chunk of the new check is ready, which matches the way the non chunked
+  // path behaves where underlines only refresh once the whole check is done.
+  if FChunkedCheck and (FChunkSize > 0) and (Length(FRichMemo.Text) > FChunkSize) then
+  begin
+    FAppliedErrorCount := 0;
+    FFirstChunkApplied := False;
+    SetLength(FLastErrors, 0);
+  end;
+
   FCheckText := FRichMemo.Text;
   // Give the Hunspell engine a pointer to the cancellation flag so that long
   // running dictionary scans stop quickly when text or language changes.
@@ -1022,16 +1096,129 @@ begin
 end;
 
 procedure TSpellChecker.DoBackgroundCheck;
+var
+  TotalLen: integer = 0;
+  ChunkStart: integer = 1;
+  ChunkEnd: integer = 0;
+  ChunkText: string = '';
+  ChunkErrors: RichSpellChecker.TSpellErrorArray = nil;
+  i: integer = 0;
+  Base: integer = 0;
+  UseChunked: boolean = False;
+  MaxExtend: integer = 0;
 begin
-  if FEngine = seHunspell then
+  SetLength(FLastErrors, 0);
+  UseChunked := FChunkedCheck and (FChunkSize > 0) and (Length(FCheckText) > FChunkSize);
+
+  if not UseChunked then
   begin
-    if Assigned(FHunSpellChecker) then
-      FLastErrors := TSpell.HunCheckText(FCheckText, FHunSpellChecker, FOptions, FAddEmptySuggestions)
+    // Non chunked path - the whole text is checked in one pass
+    if FEngine = seHunspell then
+    begin
+      if Assigned(FHunSpellChecker) then
+        FLastErrors := TSpell.HunCheckText(FCheckText, FHunSpellChecker, FOptions, FAddEmptySuggestions)
+      else
+        SetLength(FLastErrors, 0);
+    end
     else
-      SetLength(FLastErrors, 0);
-  end
-  else
-    FLastErrors := TSpell.CheckText(FCheckText, FLanguage, FOptions, FAddEmptySuggestions);
+      FLastErrors := TSpell.CheckText(FCheckText, FLanguage, FOptions, FAddEmptySuggestions);
+    Exit;
+  end;
+
+  // Chunked path - split the text at word boundaries and emit partial
+  // results to the main thread after every chunk
+  TotalLen := Length(FCheckText);
+  while ChunkStart <= TotalLen do
+  begin
+    if InterlockedCompareExchange(FCancelRequested, 0, 0) = 1 then
+      Exit;
+
+    ChunkEnd := ChunkStart + FChunkSize - 1;
+    if ChunkEnd > TotalLen then
+      ChunkEnd := TotalLen;
+    // Extend to the next whitespace so a word is not split in half. The
+    // extension is capped to avoid scanning megabytes when no whitespace
+    // exists for a long time (for example a base64 blob in the text).
+    MaxExtend := ChunkStart + FChunkSize * 4;
+    while (ChunkEnd < TotalLen) and (ChunkEnd < MaxExtend) and not (FCheckText[ChunkEnd] in [' ', #9, #10, #13]) do
+      Inc(ChunkEnd);
+    ChunkText := Copy(FCheckText, ChunkStart, ChunkEnd - ChunkStart + 1);
+
+    if FEngine = seHunspell then
+    begin
+      if Assigned(FHunSpellChecker) then
+        ChunkErrors := TSpell.HunCheckText(ChunkText, FHunSpellChecker, FOptions, FAddEmptySuggestions)
+      else
+        SetLength(ChunkErrors, 0);
+    end
+    else
+      ChunkErrors := TSpell.CheckText(ChunkText, FLanguage, FOptions, FAddEmptySuggestions);
+
+    // Shift offsets from chunk local to full text coordinates
+    for i := 0 to High(ChunkErrors) do
+      ChunkErrors[i].Offset := ChunkErrors[i].Offset + (ChunkStart - 1);
+
+    // Append to the accumulated error list. Assignment is used instead of
+    // Move because TSpellError contains managed fields (string, dyn array).
+    Base := Length(FLastErrors);
+    SetLength(FLastErrors, Base + Length(ChunkErrors));
+    for i := 0 to High(ChunkErrors) do
+      FLastErrors[Base + i] := ChunkErrors[i];
+
+    // Hand off the newly found errors to the main thread for drawing.
+    // Synchronize blocks the worker, so FLastErrors is not touched
+    // concurrently while the main thread reads it.
+    if FAutoApply and not FDestroying then
+      TThread.Synchronize(nil, @ApplyPartialErrors);
+
+    ChunkStart := ChunkEnd + 1;
+  end;
+end;
+
+procedure TSpellChecker.ApplyPartialErrors;
+var
+  i: integer = 0;
+begin
+  if FDestroying or (FRichMemo = nil) or (FSpellChecker = nil) then
+    Exit;
+  // Skip drawing if the memo text has changed since the snapshot was taken,
+  // a fresh check will redraw everything anyway. Length is compared first
+  // because the full text comparison is expensive on large documents.
+  if Length(FRichMemo.Text) <> Length(FCheckText) then
+    Exit;
+  if not FCheckText.EqualNormalized(FRichMemo.Text) then
+    Exit;
+
+  // Batching via BeginUpdate/EndUpdate suppresses per-error repaints and
+  // applies all new underlines in a single WM_SETREDRAW window. EndUpdate
+  // is incremental now, so it redraws only the errors added in this chunk
+  // and the total cost stays linear across the whole document.
+  FSpellChecker.BeginUpdate;
+  FRichMemo.Lines.BeginUpdate;
+  FInternalChange := True;
+  try
+    // On the very first chunk of a new check, drop stale underlines left
+    // over from the previous run. Doing it here, inside the batch, keeps
+    // the previous highlights on screen until fresh results actually exist.
+    if not FFirstChunkApplied then
+    begin
+      FSpellChecker.Clear;
+      FFirstChunkApplied := True;
+    end;
+
+    for i := FAppliedErrorCount to High(FLastErrors) do
+      FSpellChecker.AddError(
+        FLastErrors[i].Offset,
+        FLastErrors[i].Length,
+        FLastErrors[i].Message,
+        FLastErrors[i].Replacements,
+        FLastErrors[i].Color);
+    FAppliedErrorCount := Length(FLastErrors);
+  finally
+    FInternalChange := False;
+    FRichMemo.Lines.EndUpdate;
+    FSpellChecker.EndUpdate;
+  end;
 end;
 
 procedure TSpellChecker.OnBackgroundDone;
@@ -1090,13 +1277,19 @@ begin
     // Skip applying if text has changed since check started
     if FCheckText.EqualNormalized(FRichMemo.Text) then
     begin
-      FRichMemo.Lines.BeginUpdate;
-      FInternalChange := True;
-      try
-        TSpell.ApplyErrors(FSpellChecker, FLastErrors);
-      finally
-        FRichMemo.Lines.EndUpdate;
-        FInternalChange := False;
+      // In chunked mode every error was already drawn incrementally by
+      // ApplyPartialErrors, so a full redraw here would be redundant. Only
+      // the non-chunked path needs the final ApplyErrors call.
+      if not (FChunkedCheck and (FChunkSize > 0) and (Length(FCheckText) > FChunkSize)) then
+      begin
+        FRichMemo.Lines.BeginUpdate;
+        FInternalChange := True;
+        try
+          TSpell.ApplyErrors(FSpellChecker, FLastErrors);
+        finally
+          FRichMemo.Lines.EndUpdate;
+          FInternalChange := False;
+        end;
       end;
     end;
   end;
@@ -1885,8 +2078,7 @@ begin
   // user project folder.
   if Pos('{temp}', LowerCase(APath)) > 0 then
   begin
-    P := StringReplace(APath, '{temp}', ExcludeTrailingPathDelimiter(GetTempDir),
-      [rfReplaceAll, rfIgnoreCase]);
+    P := StringReplace(APath, '{temp}', ExcludeTrailingPathDelimiter(GetTempDir), [rfReplaceAll, rfIgnoreCase]);
     Result := SetDirSeparators(P);
     Exit;
   end;
