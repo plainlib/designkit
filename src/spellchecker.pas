@@ -23,7 +23,6 @@ uses
   Menus,
   LazFileUtils,
   LazUTF8,
-  LazUnicode,
   RichMemo,
   RichSpellChecker,
   SpellUtils,
@@ -83,6 +82,8 @@ type
     FLastVisEnd: integer;          // Last observed visible character end (1-based)
     FCheckByteStart: integer;      // Byte offset in FCheckText of the range being checked
     FCheckByteEnd: integer;        // Byte offset in FCheckText of the range being checked
+    FLastVisChangeTick: QWord;     // When the visible range last changed
+    FScrollSettleDelay: integer;   // Stability time before a visible-only check runs
 
     // Async dictionary loading state
     FLoadThread: TThread;              // Thread handle used to wait on a pending async load
@@ -311,9 +312,11 @@ begin
 end;
 
 function SpellOffsetBase(const S: string; AByteLen: integer): integer;
+  {$IFDEF WINDOWS}
 var
   I: integer;
   C: cardinal;
+  {$ENDIF}
 begin
   if AByteLen <= 0 then
     Exit(0);
@@ -407,6 +410,8 @@ begin
   FLastVisEnd := -1;
   FCheckByteStart := 1;
   FCheckByteEnd := 0;
+  FLastVisChangeTick := 0;
+  FScrollSettleDelay := 400;
 
   // Default integration settings
   FPopupMenu := nil;
@@ -919,6 +924,9 @@ end;
 procedure TSpellChecker.OnScrollTimerTick(Sender: TObject);
 var
   VisStart, VisEnd: integer;
+  {$IFNDEF WINDOWS}
+  Now: QWord;
+  {$ENDIF}
 begin
   if not FEnabled or not FCheckVisibleOnly then
     Exit;
@@ -926,14 +934,42 @@ begin
     Exit;
   if not GetVisibleTextRange(VisStart, VisEnd) then
     Exit;
-  // Nothing changed since the last poll, nothing to do
+
+  {$IFDEF WINDOWS}
+  // On Windows underline drawing does not disturb scrolling, so the check
+  // can start as soon as the visible range changes. A running check is
+  // cancelled and re-queued inside StartCheck, no extra guard is needed.
   if (VisStart = FLastVisStart) and (VisEnd = FLastVisEnd) then
     Exit;
   FLastVisStart := VisStart;
   FLastVisEnd := VisEnd;
-  // A running check is cancelled and re-queued inside StartCheck, so no
-  // extra guard is needed here.
   CheckNow;
+  {$ELSE}
+  // The visible range changed, the user is (probably) scrolling. Record the
+  // moment and cancel any running check: applying stale results right now
+  // would repaint the memo in the middle of a scroll, which on GTK causes
+  // visible jitter and the loss of the current scroll position.
+  if (VisStart <> FLastVisStart) or (VisEnd <> FLastVisEnd) then
+  begin
+    FLastVisStart := VisStart;
+    FLastVisEnd := VisEnd;
+    FLastVisChangeTick := GetTickCount64;
+    CancelCheck;
+    Exit;
+  end;
+
+  // The range has not changed since the last tick. Wait until it has been
+  // stable long enough, so the actual check only starts after the user has
+  // stopped scrolling.
+  Now := GetTickCount64;
+  if (FLastVisChangeTick = 0) or (Now - FLastVisChangeTick < QWord(FScrollSettleDelay)) then
+    Exit;
+
+  // Mark as already handled: the next tick will not fire again until the
+  // visible range changes, so a stable scroll position is checked only once.
+  FLastVisChangeTick := 0;
+  CheckNow;
+  {$ENDIF}
 end;
 
 procedure TSpellChecker.LoadHunDictionaryFromFiles(const AFFFileName, DICFileName: string);
