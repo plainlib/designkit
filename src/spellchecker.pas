@@ -77,6 +77,13 @@ type
     FChunkSize: integer;              // Size of one chunk in characters
     FAppliedErrorCount: integer;      // Number of errors already drawn in chunked mode
 
+    FCheckVisibleOnly: boolean;    // When True, only the visible portion is checked
+    FScrollTimer: TTimer;          // Polls the visible range and re-checks on scroll
+    FLastVisStart: integer;        // Last observed visible character start (1-based)
+    FLastVisEnd: integer;          // Last observed visible character end (1-based)
+    FCheckByteStart: integer;      // Byte offset in FCheckText of the range being checked
+    FCheckByteEnd: integer;        // Byte offset in FCheckText of the range being checked
+
     // Async dictionary loading state
     FLoadThread: TThread;              // Thread handle used to wait on a pending async load
     FLoadingDictionary: boolean;       // True while a dictionary is being loaded in background
@@ -133,6 +140,10 @@ type
     procedure SetDicUrl(const AValue: string);
     procedure SetChunkedCheck(AValue: boolean);
     procedure SetChunkSize(AValue: integer);
+    procedure SetCheckVisibleOnly(AValue: boolean);
+    procedure StartScrollTimer;
+    procedure StopScrollTimer;
+    procedure OnScrollTimerTick(Sender: TObject);
     procedure UpdateContextMenuHandler;
     procedure OnRichMemoChange(Sender: TObject);
     procedure OnRichMemoContextPopup(Sender: TObject; MousePos: TPoint; var Handled: boolean);
@@ -266,6 +277,13 @@ type
     // Size of a single chunk in characters (used when ChunkedCheck is True)
     property ChunkSize: integer read FChunkSize write SetChunkSize default 16384;
 
+    // When True, only the text currently visible in the RichMemo is checked.
+    // A polling timer re-runs the check whenever the visible range changes
+    // (scroll or text change), keeping the visible area up to date without
+    // touching the rest of the document. ChunkedCheck is ignored in this
+    // mode because the visible portion is already small.
+    property CheckVisibleOnly: boolean read FCheckVisibleOnly write SetCheckVisibleOnly default False;
+
     // Called after a check has finished and (if AutoApply) errors are applied
     property OnSpellCheckComplete: TSpellCheckCompleteEvent read FOnSpellCheckComplete write FOnSpellCheckComplete;
 
@@ -280,15 +298,6 @@ type
   end;
 
 implementation
-
-{$IFDEF WINDOWS}
-const
-  // RichEdit messages used to save and restore the scroll position while
-  // incremental underlines are drawn. They are not exposed by the Windows
-  // unit, and RichSpellChecker declares its own copies privately.
-  EM_GETSCROLLPOS = WM_USER + 221;
-  EM_SETSCROLLPOS = WM_USER + 222;
-{$ENDIF}
 
 function IsPathAbsolute(const Path: string): boolean;
 begin
@@ -392,6 +401,13 @@ begin
   FChunkSize := 16384;
   FAppliedErrorCount := 0;
 
+  FCheckVisibleOnly := False;
+  FScrollTimer := nil;
+  FLastVisStart := -1;
+  FLastVisEnd := -1;
+  FCheckByteStart := 1;
+  FCheckByteEnd := 0;
+
   // Default integration settings
   FPopupMenu := nil;
   FSubMenu := False;
@@ -450,6 +466,10 @@ begin
     FreeAndNil(FDebounceTimer);
   end;
 
+  StopScrollTimer;
+  if Assigned(FScrollTimer) then
+    FreeAndNil(FScrollTimer);
+
   // Free internal spell checker
   if Assigned(FSpellChecker) then
     FreeAndNil(FSpellChecker);
@@ -481,6 +501,7 @@ begin
     begin
       FreeAndNil(FSpellChecker);
     end;
+    StopScrollTimer;
     FRichMemo := nil;
     if Assigned(FDebounceTimer) then
       FDebounceTimer.Enabled := False;
@@ -520,6 +541,9 @@ begin
     LoadHunDictionaryForLanguage;
   end;
 
+  if FEnabled and FCheckVisibleOnly and Assigned(FRichMemo) and not (csDesigning in ComponentState) then
+    StartScrollTimer;
+
   if FEnabled and Assigned(FRichMemo) then
     CheckNow;
 end;
@@ -541,6 +565,9 @@ begin
   end;
 
   ReuseErrors := Assigned(AValue) and Assigned(FRichMemo) and (FCheckText <> '') and (AValue.Text.EqualNormalized(FCheckText));
+
+  FLastVisStart := -1;
+  FLastVisEnd := -1;
 
   if Assigned(FRichMemo) then
   begin
@@ -659,11 +686,15 @@ begin
         (FLanguage <> '') and not (csDesigning in ComponentState) and not (csLoading in ComponentState) then
         LoadHunDictionaryForLanguage;
 
+      if FCheckVisibleOnly and Assigned(FRichMemo) and not (csDesigning in ComponentState) then
+        StartScrollTimer;
+
       if Assigned(FRichMemo) and not (csLoading in ComponentState) then
         CheckNow;
     end
     else
     begin
+      StopScrollTimer;
       ClearUnderlines;
       CancelCheck;
     end;
@@ -849,6 +880,60 @@ begin
     if FEnabled and FChunkedCheck and Assigned(FRichMemo) and not (csLoading in ComponentState) then
       CheckNow;
   end;
+end;
+
+procedure TSpellChecker.SetCheckVisibleOnly(AValue: boolean);
+begin
+  if FCheckVisibleOnly <> AValue then
+  begin
+    FCheckVisibleOnly := AValue;
+    if FCheckVisibleOnly and FEnabled and Assigned(FRichMemo) and not (csDesigning in ComponentState) then
+      StartScrollTimer
+    else
+      StopScrollTimer;
+    if FEnabled and Assigned(FRichMemo) and not (csLoading in ComponentState) then
+      CheckNow;
+  end;
+end;
+
+procedure TSpellChecker.StartScrollTimer;
+begin
+  if FScrollTimer = nil then
+  begin
+    FScrollTimer := TTimer.Create(nil);
+    FScrollTimer.Interval := 200;
+    FScrollTimer.OnTimer := @OnScrollTimerTick;
+  end;
+  // Force the first poll to detect a change and trigger a check
+  FLastVisStart := -1;
+  FLastVisEnd := -1;
+  FScrollTimer.Enabled := True;
+end;
+
+procedure TSpellChecker.StopScrollTimer;
+begin
+  if Assigned(FScrollTimer) then
+    FScrollTimer.Enabled := False;
+end;
+
+procedure TSpellChecker.OnScrollTimerTick(Sender: TObject);
+var
+  VisStart, VisEnd: integer;
+begin
+  if not FEnabled or not FCheckVisibleOnly then
+    Exit;
+  if not Assigned(FRichMemo) then
+    Exit;
+  if not GetVisibleTextRange(VisStart, VisEnd) then
+    Exit;
+  // Nothing changed since the last poll, nothing to do
+  if (VisStart = FLastVisStart) and (VisEnd = FLastVisEnd) then
+    Exit;
+  FLastVisStart := VisStart;
+  FLastVisEnd := VisEnd;
+  // A running check is cancelled and re-queued inside StartCheck, so no
+  // extra guard is needed here.
+  CheckNow;
 end;
 
 procedure TSpellChecker.LoadHunDictionaryFromFiles(const AFFFileName, DICFileName: string);
@@ -1043,6 +1128,9 @@ begin
 end;
 
 procedure TSpellChecker.StartCheck;
+var
+  VisStart, VisEnd: integer;
+  TotalChars: integer;
 begin
   if FContextMenuOpen then
     Exit;
@@ -1060,9 +1148,6 @@ begin
     Exit;
   end;
 
-  // Only reset when there is no running check; when a check is running
-  // we already set the cancel flag above and the new request will be
-  // picked up by OnBackgroundDone through FPendingCheck.
   if not FChecking then
     InterlockedExchange(FCancelRequested, 0);
 
@@ -1073,6 +1158,8 @@ begin
   // place: wiping them here would make the whole document blink while the
   // background pass walks through it. The final atomic replace happens in
   // OnBackgroundDone through TSpell.ApplyErrors.
+  // Chunked mode is not used in visible-only mode because the visible
+  // portion is already small enough to be checked in a single pass.
   if FChunkedCheck and (FChunkSize > 0) and (Length(FRichMemo.Text) > FChunkSize) then
   begin
     FAppliedErrorCount := 0;
@@ -1080,6 +1167,52 @@ begin
   end;
 
   FCheckText := FRichMemo.Text;
+
+  // Compute the byte range that should be checked. In visible-only mode this
+  // is the region reported by the widget, converted from character offsets
+  // to byte offsets into the UTF-8 snapshot. Otherwise the whole text is
+  // checked and the range is trivially 1..Length(FCheckText).
+  if FCheckVisibleOnly then
+  begin
+    if GetVisibleTextRange(VisStart, VisEnd) and (VisStart > 0) then
+    begin
+      TotalChars := UTF8Length(FCheckText);
+      if VisStart > TotalChars then
+        VisStart := TotalChars;
+      if VisEnd > TotalChars then
+        VisEnd := TotalChars;
+      if VisEnd < VisStart then
+        VisEnd := VisStart;
+      FCheckByteStart := UTF8CodepointToByteIndex(PChar(FCheckText), Length(FCheckText), VisStart);
+      FCheckByteEnd := UTF8CodepointToByteIndex(PChar(FCheckText), Length(FCheckText), VisEnd);
+      if FCheckByteStart < 1 then
+        FCheckByteStart := 1;
+      if (FCheckByteEnd < FCheckByteStart) or (FCheckByteEnd > Length(FCheckText)) then
+        FCheckByteEnd := Length(FCheckText);
+
+      // Extend the range to whole words so a check that starts or ends in
+      // the middle of a word does not misreport the clipped fragments. Bytes
+      // that belong to a multi-byte UTF-8 character are never equal to an
+      // ASCII whitespace, so the backward scan stops exactly at a character
+      // boundary right after the previous whitespace, and the forward scan
+      // stops right before the next one.
+      while (FCheckByteStart > 1) and not (FCheckText[FCheckByteStart - 1] in [' ', #9, #10, #13]) do
+        Dec(FCheckByteStart);
+      while (FCheckByteEnd < Length(FCheckText)) and not (FCheckText[FCheckByteEnd + 1] in [' ', #9, #10, #13]) do
+        Inc(FCheckByteEnd);
+    end
+    else
+    begin
+      FCheckByteStart := 1;
+      FCheckByteEnd := Length(FCheckText);
+    end;
+  end
+  else
+  begin
+    FCheckByteStart := 1;
+    FCheckByteEnd := Length(FCheckText);
+  end;
+
   // Give the Hunspell engine a pointer to the cancellation flag so that long
   // running dictionary scans stop quickly when text or language changes.
   if (FEngine = seHunspell) and Assigned(FHunSpellChecker) then
@@ -1159,6 +1292,8 @@ end;
 procedure TSpellChecker.DoBackgroundCheck;
 var
   TotalLen: integer = 0;
+  RangeStart: integer = 1;
+  RangeEnd: integer = 0;
   ChunkStart: integer = 1;
   ChunkEnd: integer = 0;
   ChunkText: string = '';
@@ -1178,31 +1313,73 @@ var
   r: integer = 0;
 begin
   SetLength(FLastErrors, 0);
-  UseChunked := FChunkedCheck and (FChunkSize > 0) and (Length(FCheckText) > FChunkSize);
+
+  // Determine the byte range to check. In visible-only mode this is the
+  // region computed in StartCheck, otherwise the whole snapshot. The range
+  // is always expressed in bytes into the UTF-8 FCheckText snapshot.
+  if FCheckVisibleOnly then
+  begin
+    RangeStart := FCheckByteStart;
+    RangeEnd := FCheckByteEnd;
+  end
+  else
+  begin
+    RangeStart := 1;
+    RangeEnd := Length(FCheckText);
+  end;
+
+  if RangeEnd < RangeStart then
+    Exit;
+
+  // Chunked mode is driven by the size of the range that is actually being
+  // checked, so it works the same way for the whole document and for the
+  // visible area only.
+  UseChunked := FChunkedCheck and (FChunkSize > 0) and ((RangeEnd - RangeStart + 1) > FChunkSize);
 
   if not UseChunked then
   begin
-    // Non chunked path - the whole text is checked in one pass
+    // Single pass on the chosen range
+    ChunkText := Copy(FCheckText, RangeStart, RangeEnd - RangeStart + 1);
+    // OffsetBase is the character offset of the range start in the full
+    // text. It is added to every error offset so the caller can draw
+    // underlines against the whole document.
+    OffsetBase := SpellOffsetBase(FCheckText, RangeStart - 1);
+
     if FEngine = seHunspell then
     begin
       if Assigned(FHunSpellChecker) then
-        FLastErrors := TSpell.HunCheckText(FCheckText, FHunSpellChecker, FOptions, FAddEmptySuggestions)
+        ChunkErrors := TSpell.HunCheckText(ChunkText, FHunSpellChecker, FOptions, FAddEmptySuggestions)
       else
-        SetLength(FLastErrors, 0);
+        SetLength(ChunkErrors, 0);
     end
     else
-      FLastErrors := TSpell.CheckText(FCheckText, FLanguage, FOptions, FAddEmptySuggestions);
+      ChunkErrors := TSpell.CheckText(ChunkText, FLanguage, FOptions, FAddEmptySuggestions);
+
+    SetLength(FLastErrors, Length(ChunkErrors));
+    for i := 0 to High(ChunkErrors) do
+    begin
+      FLastErrors[i] := ChunkErrors[i];
+      FLastErrors[i].Offset := ChunkErrors[i].Offset + OffsetBase;
+    end;
     Exit;
   end;
 
   TotalLen := Length(FCheckText);
 
-  // Build the list of ranges in the order they should be checked. The area
-  // currently visible in the memo goes first so the user sees fresh results
-  // where he is looking. The remaining parts are then processed from the
-  // top of the document downwards to keep the perceived order predictable.
+  // Build the list of ranges in the order they should be checked. In
+  // visible-only mode the checked range is already the visible area, so
+  // there is only one range. In full mode the area currently visible in
+  // the memo goes first so the user sees fresh results where he is looking,
+  // and the remaining parts are processed from the top of the document
+  // downwards to keep the perceived order predictable.
   SetLength(Ranges, 0);
-  if GetVisibleTextRange(VisStart, VisEnd) and (VisStart > 1) and (VisStart <= TotalLen) then
+  if FCheckVisibleOnly then
+  begin
+    SetLength(Ranges, 1);
+    Ranges[0].StartPos := RangeStart;
+    Ranges[0].EndPos := RangeEnd;
+  end
+  else if GetVisibleTextRange(VisStart, VisEnd) and (VisStart > 1) and (VisStart <= TotalLen) then
   begin
     if VisEnd > TotalLen then
       VisEnd := TotalLen;
@@ -1210,8 +1387,8 @@ begin
     // offsets into the UTF-8 snapshot, because Ranges are consumed as
     // byte positions by the chunk loop below. Without this conversion
     // the "visible area first" priority is wrong on multibyte text.
-    VisStart := UTF8CharToByteIndex(PChar(FCheckText), TotalLen, VisStart);
-    VisEnd := UTF8CharToByteIndex(PChar(FCheckText), TotalLen, VisEnd);
+    VisStart := UTF8CodepointToByteIndex(PChar(FCheckText), TotalLen, VisStart);
+    VisEnd := UTF8CodepointToByteIndex(PChar(FCheckText), TotalLen, VisEnd);
     SetLength(Ranges, 3);
     Ranges[0].StartPos := VisStart;
     Ranges[0].EndPos := VisEnd;

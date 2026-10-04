@@ -32,6 +32,7 @@ All components are installed on the **Common Controls** tab of the component pal
 - Supports Windows Spell Checker (`seWindows`) and Hunspell (`seHunspell`).
 - For Hunspell: loads dictionaries from files, streams, or automatically downloads them from a URL (LibreOffice dictionaries repository).
 - Chunked background checking of very large documents with incremental drawing of underlines, so errors appear at the top of the document while the rest is still being checked.
+- Option to check only the visible portion of the RichMemo (`CheckVisibleOnly`), with automatic re-check on scroll or text change. Works together with `ChunkedCheck`.
 - The chunked pass starts from the currently visible area, so the user sees fresh results where he is looking even when the document is scrolled far from the beginning.
 - Events: `OnSpellCheckComplete` (reports error count), `OnContextPopup` (allows custom handling).
 
@@ -57,6 +58,7 @@ All components are installed on the **Common Controls** tab of the component pal
 | `DicUrl`               | `'https://raw.githubusercontent.com/plainlib/dictionaries/main/{plaindict}'` | URL template for downloading dictionaries. Placeholders: `{dict}` (language code + .aff/.dic), `{plaindict}` (flat dictionary name), `{libredict}` (LibreOffice internal path), `{wooormdict}` (Wooorm dictionary path). |
 | `ChunkedCheck`         | `False`        | When `True`, large texts are checked in chunks and underlines are drawn incrementally while the background pass is still running. The pass starts from the currently visible area, then covers the text above and below. |
 | `ChunkSize`            | `16384`        | Size of a single chunk in bytes (used when `ChunkedCheck` is `True`). The real chunk is extended to the next whitespace, so a word is never split in half. Minimum 256 at runtime, no minimum in the designer. |
+| `CheckVisibleOnly`     | `False`        | When `True`, only the text currently visible in the RichMemo is checked. A polling timer re-runs the check whenever the visible range changes (scroll, resize, or text change), so the rest of the document is never touched. Can be combined with `ChunkedCheck`. |
 
 ### Events
 
@@ -131,6 +133,32 @@ Suggested chunk sizes:
 The property is ignored when `ChunkedCheck` is `False` or when the text is shorter than `ChunkSize`.
 
 During design time the minimum `ChunkSize` is relaxed to `1` so the behaviour can be tested word by word. At runtime the minimum is `256` to avoid pathological fragmentation.
+
+### Checking only the visible area
+
+On very large documents even the chunked pass may spend time on parts the user is not looking at. Enable `CheckVisibleOnly` to restrict checking to the text that is currently visible in the RichMemo:
+
+```pascal
+Spell.CheckVisibleOnly := True;
+```
+
+How it works:
+
+- The component polls the visible range every 200 ms. When the range changes (scroll, resize, or text change), the check is re-run for the new range only.
+- The visible range is extended to whole-word boundaries on both ends, so a word that is only partially visible is checked in full and never misreported as a fragment.
+- Only the visible portion is checked in each pass, so the result appears much faster on long documents. Errors outside the visible range are not highlighted until they are scrolled into view.
+- The mode can be combined with `ChunkedCheck`. If the visible range is larger than `ChunkSize`, it is still split into chunks and drawn incrementally.
+
+When to use:
+
+- Large documents (many pages) where checking the whole text in the background would be wasteful.
+- Read-only or preview-style controls where the user mostly scrolls through the text.
+
+When not to use:
+
+- Short texts where checking everything at once is already fast enough and the user expects the whole document to be highlighted.
+
+The property has no effect while `Enabled` is `False`.
 
 ---
 
