@@ -1228,8 +1228,9 @@ var
   i: integer = 0;
   {$IFDEF WINDOWS}
   scrollPos: TPoint;
-  OldSelStart, OldSelLength: integer;
   {$ENDIF}
+  OldSelStart: integer = 0;
+  OldSelLength: integer = 0;
 begin
   if FDestroying or (FRichMemo = nil) then
     Exit;
@@ -1244,16 +1245,15 @@ begin
     Exit;
 
   // Draw the new underlines directly on the memo, without touching the
-  // error list of the internal checker. Existing underlines from the
-  // previous run stay visible, and only the newly found errors are added
-  // on top. The final atomic replace in OnBackgroundDone rebuilds the
-  // whole list in one batch, so stale entries disappear without any
-  // intermediate wipe.
+  // internal error list. Existing underlines from the previous run stay
+  // visible, only the newly found errors are added on top. The final
+  // atomic replace in OnBackgroundDone rebuilds the whole list at once.
   FInternalChange := True;
   try
-    {$IFDEF WINDOWS}
     OldSelStart := FRichMemo.SelStart;
     OldSelLength := FRichMemo.SelLength;
+
+    {$IFDEF WINDOWS}
     {$HINTS OFF}
     SendMessage(FRichMemo.Handle, EM_GETSCROLLPOS, 0, LPARAM(PtrInt(@scrollPos)));
     {$HINTS ON}
@@ -1274,11 +1274,22 @@ begin
       FRichMemo.Invalidate;
     end;
     {$ELSE}
-    for i := FAppliedErrorCount to High(FLastErrors) do
-      RichSpellChecker.DrawSpellUnderline(FRichMemo,
-        FLastErrors[i].Offset,
-        FLastErrors[i].Length,
-        FLastErrors[i].Color);
+    // On GTK every SetRangeParams triggers a widget update. Lines.BeginUpdate
+    // keeps the intermediate changes invisible and applies all new underlines
+    // in one visual step. The selection is restored once after the whole
+    // batch, so the view does not jump to the caret on every single error.
+    FRichMemo.Lines.BeginUpdate;
+    try
+      for i := FAppliedErrorCount to High(FLastErrors) do
+        RichSpellChecker.DrawSpellUnderline(FRichMemo,
+          FLastErrors[i].Offset,
+          FLastErrors[i].Length,
+          FLastErrors[i].Color);
+    finally
+      FRichMemo.SelStart := OldSelStart;
+      FRichMemo.SelLength := OldSelLength;
+      FRichMemo.Lines.EndUpdate;
+    end;
     {$ENDIF}
   finally
     FInternalChange := False;
