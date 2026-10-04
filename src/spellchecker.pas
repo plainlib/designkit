@@ -948,6 +948,7 @@ end;
 procedure TSpellChecker.OnRichMemoContextPopup(Sender: TObject; MousePos: TPoint; var Handled: boolean);
 var
   ScreenPoint: TPoint;
+  ChunkedActive: boolean = False;
 begin
   if Assigned(FOnContextPopup) then
     FOnContextPopup(Sender, MousePos, Handled);
@@ -964,7 +965,14 @@ begin
   begin
     FContextMenuOpen := True;
     try
-      CancelCheck; // stop background check to keep error list stable
+      // In chunked mode the error list is extended incrementally and the
+      // offsets are absolute, so cancelling the background pass here would
+      // leave the rest of the document unhighlighted until a fresh check
+      // is triggered. Non chunked checks draw nothing until they finish,
+      // so they can still be aborted without any visible effect.
+      ChunkedActive := FChunkedCheck and (FChunkSize > 0) and (Length(FCheckText) > FChunkSize);
+      if not ChunkedActive then
+        CancelCheck;
       if FSpellChecker.ShowContextMenu(MousePos.X, MousePos.Y) then
       begin
         Handled := True;
@@ -1198,6 +1206,12 @@ begin
   begin
     if VisEnd > TotalLen then
       VisEnd := TotalLen;
+    // Convert the character offsets reported by the widget into byte
+    // offsets into the UTF-8 snapshot, because Ranges are consumed as
+    // byte positions by the chunk loop below. Without this conversion
+    // the "visible area first" priority is wrong on multibyte text.
+    VisStart := UTF8CharToByteIndex(PChar(FCheckText), TotalLen, VisStart);
+    VisEnd := UTF8CharToByteIndex(PChar(FCheckText), TotalLen, VisEnd);
     SetLength(Ranges, 3);
     Ranges[0].StartPos := VisStart;
     Ranges[0].EndPos := VisEnd;
@@ -1280,13 +1294,8 @@ end;
 procedure TSpellChecker.ApplyPartialErrors;
 var
   i: integer = 0;
-  {$IFDEF WINDOWS}
-  scrollPos: TPoint;
-  {$ENDIF}
-  OldSelStart: integer = 0;
-  OldSelLength: integer = 0;
 begin
-  if FDestroying or (FRichMemo = nil) then
+  if FDestroying or (FRichMemo = nil) or (FSpellChecker = nil) then
     Exit;
   // Skip drawing if the memo text has changed since the snapshot was taken,
   // a fresh check will redraw everything anyway. Length is compared first
@@ -1298,58 +1307,30 @@ begin
   if FAppliedErrorCount >= Length(FLastErrors) then
     Exit;
 
-  // Draw the new underlines directly on the memo, without touching the
-  // internal error list. Existing underlines from the previous run stay
-  // visible, only the newly found errors are added on top. The final
-  // atomic replace in OnBackgroundDone rebuilds the whole list at once.
+  // Batching through BeginUpdate/EndUpdate keeps the checker's internal
+  // error list in sync with what is drawn on screen. This is important for
+  // the context menu: GetErrorAtTextPos searches that list, so errors that
+  // are only painted directly would be invisible to the menu. EndUpdate
+  // is incremental now, so only the newly added errors are drawn and the
+  // total cost stays linear across all chunks.
   FInternalChange := True;
   try
-    OldSelStart := FRichMemo.SelStart;
-    OldSelLength := FRichMemo.SelLength;
-
-    {$IFDEF WINDOWS}
-    {$HINTS OFF}
-    SendMessage(FRichMemo.Handle, EM_GETSCROLLPOS, 0, LPARAM(PtrInt(@scrollPos)));
-    {$HINTS ON}
-    SendMessage(FRichMemo.Handle, WM_SETREDRAW, 0, 0);
+    FSpellChecker.BeginUpdate;
     try
       for i := FAppliedErrorCount to High(FLastErrors) do
-        RichSpellChecker.DrawSpellUnderline(FRichMemo,
+        FSpellChecker.AddError(
           FLastErrors[i].Offset,
           FLastErrors[i].Length,
+          FLastErrors[i].Message,
+          FLastErrors[i].Replacements,
           FLastErrors[i].Color);
     finally
-      FRichMemo.SelStart := OldSelStart;
-      FRichMemo.SelLength := OldSelLength;
-      {$HINTS OFF}
-      SendMessage(FRichMemo.Handle, EM_SETSCROLLPOS, 0, LPARAM(PtrInt(@scrollPos)));
-      {$HINTS ON}
-      SendMessage(FRichMemo.Handle, WM_SETREDRAW, 1, 0);
-      FRichMemo.Invalidate;
+      FSpellChecker.EndUpdate;
     end;
-    {$ELSE}
-    // On GTK every SetRangeParams triggers a widget update. Lines.BeginUpdate
-    // keeps the intermediate changes invisible and applies all new underlines
-    // in one visual step. The selection is restored once after the whole
-    // batch, so the view does not jump to the caret on every single error.
-    FRichMemo.Lines.BeginUpdate;
-    try
-      for i := FAppliedErrorCount to High(FLastErrors) do
-        RichSpellChecker.DrawSpellUnderline(FRichMemo,
-          FLastErrors[i].Offset,
-          FLastErrors[i].Length,
-          FLastErrors[i].Color);
-    finally
-      FRichMemo.SelStart := OldSelStart;
-      FRichMemo.SelLength := OldSelLength;
-      FRichMemo.Lines.EndUpdate;
-    end;
-    {$ENDIF}
+    FAppliedErrorCount := Length(FLastErrors);
   finally
     FInternalChange := False;
   end;
-
-  FAppliedErrorCount := Length(FLastErrors);
 end;
 
 function TSpellChecker.GetVisibleTextRange(out AStart, AEnd: integer): boolean;
