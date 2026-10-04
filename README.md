@@ -31,6 +31,8 @@ All components are installed on the **Common Controls** tab of the component pal
 - Integration with an external `PopupMenu` – suggestions can be placed directly in the menu or inside a submenu.
 - Supports Windows Spell Checker (`seWindows`) and Hunspell (`seHunspell`).
 - For Hunspell: loads dictionaries from files, streams, or automatically downloads them from a URL (LibreOffice dictionaries repository).
+- Chunked background checking of very large documents with incremental drawing of underlines, so errors appear at the top of the document while the rest is still being checked.
+- The chunked pass starts from the currently visible area, so the user sees fresh results where he is looking even when the document is scrolled far from the beginning.
 - Events: `OnSpellCheckComplete` (reports error count), `OnContextPopup` (allows custom handling).
 
 ### Key Properties
@@ -52,7 +54,9 @@ All components are installed on the **Common Controls** tab of the component pal
 | `SubMenuIndex`         | `0`            | Index where suggestions (or submenu) are inserted in `PopupMenu`. |
 | `Engine`               | `seWindows`    | Spell engine: `seWindows` or `seHunspell`. |
 | `DicPath`              | `''`           | Directory for Hunspell dictionaries (absolute or relative to the application). |
-| `DicUrl`               | `'https://raw.githubusercontent.com/LibreOffice/dictionaries/master/{libredict}'` | URL template for downloading dictionaries. Placeholders: `{dict}` (language code + .aff/.dic) or `{libredict}` (LibreOffice internal path). |
+| `DicUrl`               | `'https://raw.githubusercontent.com/plainlib/dictionaries/main/{plaindict}'` | URL template for downloading dictionaries. Placeholders: `{dict}` (language code + .aff/.dic), `{plaindict}` (flat dictionary name), `{libredict}` (LibreOffice internal path), `{wooormdict}` (Wooorm dictionary path). |
+| `ChunkedCheck`         | `False`        | When `True`, large texts are checked in chunks and underlines are drawn incrementally while the background pass is still running. The pass starts from the currently visible area, then covers the text above and below. |
+| `ChunkSize`            | `16384`        | Size of a single chunk in bytes (used when `ChunkedCheck` is `True`). The real chunk is extended to the next whitespace, so a word is never split in half. Minimum 256 at runtime, no minimum in the designer. |
 
 ### Events
 
@@ -84,6 +88,8 @@ begin
   Spell.RealTime := True;
   Spell.CheckDelay := 800;
   Spell.AutoApply := True;
+  Spell.ChunkedCheck := True;
+  Spell.ChunkSize := 8192; // Roughly 2 to 4 pages
 end;
 ```
 
@@ -94,6 +100,37 @@ Spell.PopupMenu := MyPopupMenu;
 Spell.SubMenu := False; // suggestions appear directly in the menu
 Spell.SubMenuIndex := 2; // insert after the second item
 ```
+
+### Chunked checking of large documents
+
+By default the component checks the entire text in one background pass and applies all underlines at once. This is fine for short and medium documents, but on very large texts the user has to wait until the whole pass is finished before any error is highlighted.
+
+Enable `ChunkedCheck` to split the text into pieces and draw underlines incrementally:
+
+```pascal
+Spell.ChunkedCheck := True;
+Spell.ChunkSize := 16384; // roughly 4 to 5 pages of Latin text
+```
+
+How it works:
+
+- The text is split at whitespace boundaries, so words are never cut in half. A chunk may be larger than `ChunkSize` if no whitespace is found within a reasonable distance.
+- As soon as the first chunk is processed, its errors are drawn. The user sees results at the top of the document while the rest is still being checked.
+- The pass starts from the area currently visible in the memo, then covers the text above it and finally the text below it. This way, if the user has scrolled to the middle of a long document, fresh underlines appear where he is looking first.
+- Existing underlines from the previous run are kept on screen during the pass and replaced atomically in a single operation at the end. This avoids flicker.
+- Total work stays linear in the number of errors: each chunk draws only its own newly found errors, and the final replace redraws everything once.
+
+Suggested chunk sizes:
+
+| Language family      | Recommended `ChunkSize` | Approximate size         |
+|----------------------|-------------------------|--------------------------|
+| Latin (English, etc.)| 16384 – 32768           | 4 to 8 pages             |
+| Cyrillic (Russian)   | 8192 – 16384            | 2 to 4 pages             |
+| Any, "instant" feel  | 2048                    | half a page or less      |
+
+The property is ignored when `ChunkedCheck` is `False` or when the text is shorter than `ChunkSize`.
+
+During design time the minimum `ChunkSize` is relaxed to `1` so the behaviour can be tested word by word. At runtime the minimum is `256` to avoid pathological fragmentation.
 
 ---
 
