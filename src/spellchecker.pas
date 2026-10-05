@@ -75,6 +75,7 @@ type
     FChunkedCheck: boolean;           // Enable incremental chunk based checking
     FChunkSize: integer;              // Size of one chunk in characters
     FAppliedErrorCount: integer;      // Number of errors already drawn in chunked mode
+    FLastPartialApplyTick: QWord; // Last time partial errors were drawn in chunked mode
 
     FCheckVisibleOnly: boolean;    // When True, only the visible portion is checked
     FScrollTimer: TTimer;          // Polls the visible range and re-checks on scroll
@@ -117,6 +118,7 @@ type
     FInternalChange: boolean;   // True while we modify RichMemo ourselves
     FCancelRequested: integer; // 0 = no cancel, 1 = cancel requested
     FCheckText: string;        // Snapshot of text for background check
+    FTextChangedSinceCheck: boolean; // True when the memo text changed after the last snapshot
     FLastErrors: RichSpellChecker.TSpellErrorArray;
     FDebounceTimer: TTimer;
     FPrevContextPopup: TContextPopupEvent; // saved original RichMemo.OnContextPopup
@@ -371,6 +373,7 @@ begin
   FPendingCheck := False;
   FInternalChange := False;
   FCancelRequested := 0;
+  FTextChangedSinceCheck := False;
   FCheckThread := nil;
   FSpellChecker := nil;
   FLastErrors := nil;
@@ -403,7 +406,7 @@ begin
   FChunkedCheck := False;
   FChunkSize := 16384;
   FAppliedErrorCount := 0;
-
+  FLastPartialApplyTick := 0;
   FCheckVisibleOnly := False;
   FScrollTimer := nil;
   FLastVisStart := -1;
@@ -924,9 +927,7 @@ end;
 procedure TSpellChecker.OnScrollTimerTick(Sender: TObject);
 var
   VisStart, VisEnd: integer;
-  {$IFNDEF WINDOWS}
   Now: QWord;
-  {$ENDIF}
 begin
   if not FEnabled or not FCheckVisibleOnly then
     Exit;
@@ -935,20 +936,12 @@ begin
   if not GetVisibleTextRange(VisStart, VisEnd) then
     Exit;
 
-  {$IFDEF WINDOWS}
-  // On Windows underline drawing does not disturb scrolling, so the check
-  // can start as soon as the visible range changes. A running check is
-  // cancelled and re-queued inside StartCheck, no extra guard is needed.
-  if (VisStart = FLastVisStart) and (VisEnd = FLastVisEnd) then
-    Exit;
-  FLastVisStart := VisStart;
-  FLastVisEnd := VisEnd;
-  CheckNow;
-  {$ELSE}
   // The visible range changed, the user is (probably) scrolling. Record the
   // moment and cancel any running check: applying stale results right now
-  // would repaint the memo in the middle of a scroll, which on GTK causes
-  // visible jitter and the loss of the current scroll position.
+  // would repaint the memo in the middle of a scroll and cause visible
+  // jitter and the loss of the current scroll position. The same behaviour
+  // is now used on all platforms, because starting a check during an active
+  // scroll slows down large documents.
   if (VisStart <> FLastVisStart) or (VisEnd <> FLastVisEnd) then
   begin
     FLastVisStart := VisStart;
@@ -969,7 +962,6 @@ begin
   // visible range changes, so a stable scroll position is checked only once.
   FLastVisChangeTick := 0;
   CheckNow;
-  {$ENDIF}
 end;
 
 procedure TSpellChecker.LoadHunDictionaryFromFiles(const AFFFileName, DICFileName: string);
@@ -1036,6 +1028,12 @@ begin
   // If the change was caused by our own internal operation
   // (e.g. applying spell-check underlines), do not notify the user.
   if FInternalChange then Exit;
+
+  // Any user visible change invalidates the snapshot used by the running
+  // check. Track it with a flag so ApplyPartialErrors and OnBackgroundDone
+  // can skip their work without comparing the full text on every chunk,
+  // which is very expensive on large documents.
+  FTextChangedSinceCheck := True;
 
   // Call original RichMemo.OnChange handler if assigned
   if Assigned(FPrevOnChange) then
@@ -1200,9 +1198,11 @@ begin
   begin
     FAppliedErrorCount := 0;
     SetLength(FLastErrors, 0);
+    FLastPartialApplyTick := 0;
   end;
 
   FCheckText := FRichMemo.Text;
+  FTextChangedSinceCheck := False;
 
   // Compute the byte range that should be checked. In visible-only mode this
   // is the region reported by the widget, converted from character offsets
@@ -1494,9 +1494,13 @@ begin
         FLastErrors[Base + i] := ChunkErrors[i];
 
       // Hand off the newly found errors to the main thread for drawing.
-      // Synchronize blocks the worker, so FLastErrors is not touched
-      // concurrently while the main thread reads it.
-      if FAutoApply and not FDestroying then
+      // Only the visible range (Ranges[0]) should trigger an incremental
+      // draw. Off screen chunks would still force the main thread to
+      // repaint the visible area after every chunk with no visible benefit
+      // and are the main source of hangs on large documents with dense
+      // errors. Their errors are still collected in FLastErrors and drawn
+      // once by the final atomic ApplyErrors call in OnBackgroundDone.
+      if FAutoApply and not FDestroying and (r = 0) then
         TThread.Synchronize(nil, @ApplyPartialErrors);
 
       ChunkStart := ChunkEnd + 1;
@@ -1505,20 +1509,50 @@ begin
 end;
 
 procedure TSpellChecker.ApplyPartialErrors;
+const
+  // Minimum delay between two incremental draws while a chunked check is
+  // running. Drawing on every chunk makes RichEdit rebuild its formatting
+  // runs and repaint the affected lines far too often, which on large
+  // documents with many underlines turns the whole check into what looks
+  // like a freeze near the end, where the error density is highest.
+  PARTIAL_APPLY_INTERVAL_MS = 400;
+  // If more than this many errors are waiting to be drawn, skip the
+  // incremental pass entirely. A single very large batch can block the
+  // main thread for seconds, and the final full apply in OnBackgroundDone
+  // will draw everything anyway, so no underline is ever lost. Lower this
+  // value if freezes persist, raise it if the incremental feedback feels
+  // too coarse on well behaved documents.
+  PARTIAL_APPLY_MAX_BATCH = 200;
 var
   i: integer = 0;
+  NewCount: integer = 0;
+  Now: QWord = 0;
 begin
   if FDestroying or (FRichMemo = nil) or (FSpellChecker = nil) then
     Exit;
-  // Skip drawing if the memo text has changed since the snapshot was taken,
-  // a fresh check will redraw everything anyway. Length is compared first
-  // because the full text comparison is expensive on large documents.
-  if Length(FRichMemo.Text) <> Length(FCheckText) then
+
+  // Skip drawing if the memo text changed after the snapshot was taken.
+  // The flag is maintained by OnRichMemoChange, so no full text copy or
+  // comparison is needed here. This keeps the per chunk overhead constant
+  // even on very large documents.
+  if FTextChangedSinceCheck then
     Exit;
-  if not FCheckText.EqualNormalized(FRichMemo.Text) then
+
+  NewCount := Length(FLastErrors) - FAppliedErrorCount;
+  if NewCount <= 0 then
     Exit;
-  if FAppliedErrorCount >= Length(FLastErrors) then
+
+  // Defer very large batches to avoid a multi second freeze. The final
+  // apply in OnBackgroundDone still draws them, so nothing is lost.
+  if NewCount > PARTIAL_APPLY_MAX_BATCH then
     Exit;
+
+  // Throttle small batches by time so the widget is not repainted on every
+  // chunk. The first call always passes because the tick is still zero.
+  Now := GetTickCount64;
+  if (FLastPartialApplyTick <> 0) and (Now - FLastPartialApplyTick < QWord(PARTIAL_APPLY_INTERVAL_MS)) then
+    Exit;
+  FLastPartialApplyTick := Now;
 
   // Batching through BeginUpdate/EndUpdate keeps the checker's internal
   // error list in sync with what is drawn on screen. This is important for
@@ -1645,8 +1679,9 @@ begin
 
   if FAutoApply then
   begin
-    // Skip applying if text has changed since check started
-    if FCheckText.EqualNormalized(FRichMemo.Text) then
+    // Skip applying if text has changed since check started. The flag is
+    // set by OnRichMemoChange, so a full text comparison is not needed.
+    if not FTextChangedSinceCheck then
     begin
       // The final atomic replace is what removes stale underlines left
       // over from the previous run. In chunked mode the incremental pass
