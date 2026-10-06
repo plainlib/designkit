@@ -49,6 +49,7 @@ All components are installed on the **Common Controls** tab of the component pal
 | `CheckDelay`           | `1000`         | Debounce delay in milliseconds for real‑time checks. |
 | `AutoApply`            | `True`         | Automatically apply underlines after a check completes. |
 | `AutoContextMenu`      | `True`         | Automatically handle `OnContextPopup` to show suggestion menu. |
+| `MemoChangeOnReplace`  | `False`        | When `True`, `RichMemo.OnChange` fires when a word is replaced from the suggestions menu. When `False`, `OnChange` is suppressed during the replacement to avoid reentrant spell checking. |
 | `PopupMenu`            | `nil`          | An external `TPopupMenu` to integrate suggestions into (if `nil`, uses default behaviour). |
 | `SubMenu`              | `False`        | If `True`, suggestions are placed in a submenu. |
 | `SubMenuCaption`       | `'Suggestions'`| Caption of the submenu when `SubMenu` is `True`. |
@@ -59,13 +60,15 @@ All components are installed on the **Common Controls** tab of the component pal
 | `ChunkedCheck`         | `False`        | When `True`, large texts are checked in chunks and underlines are drawn incrementally while the background pass is still running. The pass starts from the currently visible area, then covers the text above and below. |
 | `ChunkSize`            | `16384`        | Size of a single chunk in bytes (used when `ChunkedCheck` is `True`). The real chunk is extended to the next whitespace, so a word is never split in half. Minimum 256 at runtime, no minimum in the designer. |
 | `CheckVisibleOnly`     | `False`        | When `True`, only the text currently visible in the RichMemo is checked. A polling timer re-runs the check whenever the visible range changes (scroll, resize, or text change), so the rest of the document is never touched. Can be combined with `ChunkedCheck`. |
+| `TwoPhaseSuggestions`  | `False`        | When `True`, the check runs in two passes. The first pass only detects errors and draws underlines, the second pass generates suggestions in the background for each detected error. Hunspell engine only. |
 
 ### Events
 
 | Event                    | Description |
 |--------------------------|-------------|
 | `OnSpellCheckComplete`   | Fired after a check finishes (and after underlines are applied, if `AutoApply` is `True`). Provides the number of errors found. |
-| `OnContextPopup`         | Called before the component’s built‑in context menu handling. Set `Handled` to `True` to prevent the component from showing its menu. |
+| `OnContextPopup`         | Called before the component's built-in context menu handling. Set `Handled` to `True` to prevent the component from showing its menu. |
+| `OnReplace`              | Fired right after a word was replaced from the suggestions menu. Use it when you need to react to a replacement, because `RichMemo.OnChange` does not fire in that case. |
 
 ### Usage
 
