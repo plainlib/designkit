@@ -114,6 +114,10 @@ type
     FSpellChecker: TRichSpellChecker;
     FCheckThread: TThread;
     FChecking: boolean;
+    FTwoPhaseSuggestions: boolean; // When True, suggestions are generated in a separate background pass
+    FSuggestionErrors: array of TStringArray; // Suggestion lists collected by the second pass
+    FSuggestionThread: TThread;    // Background thread for the suggestion pass
+    FSuggesting: boolean;          // True while the suggestion pass is running
     FPendingCheck: boolean;
     FInternalChange: boolean;   // True while we modify RichMemo ourselves
     FCancelRequested: integer; // 0 = no cancel, 1 = cancel requested
@@ -145,6 +149,7 @@ type
     procedure SetChunkedCheck(AValue: boolean);
     procedure SetChunkSize(AValue: integer);
     procedure SetCheckVisibleOnly(AValue: boolean);
+    procedure SetTwoPhaseSuggestions(AValue: boolean);
     function GetWinSupportedLanguages: TStrings;
     procedure StartScrollTimer;
     procedure StopScrollTimer;
@@ -159,6 +164,9 @@ type
     // Falls back to the whole text when the platform cannot report it.
     function GetVisibleTextRange(out AStart, AEnd: integer): boolean;
     procedure OnBackgroundDone;
+    procedure StartSuggestionPass;
+    procedure DoBackgroundSuggestions;
+    procedure OnSuggestionsReady;
     procedure StartCheck;
     procedure ApplyErrors(const AErrors: RichSpellChecker.TSpellErrorArray);
     procedure ClearUnderlines;
@@ -319,6 +327,14 @@ type
 
     // Read only list of BCP-47 tags supported by the current engine, visible in the Object Inspector
     property WinSupportedLanguages: TStrings read GetWinSupportedLanguages;
+
+    // When True, the check is split into two passes. The first pass only
+    // detects errors and draws underlines so the user sees feedback as
+    // soon as possible. The second pass runs in the background and
+    // generates suggestions for every detected error. Suggestions appear
+    // in the context menu as soon as they are ready. Currently supported
+    // only by the Hunspell engine.
+    property TwoPhaseSuggestions: boolean read FTwoPhaseSuggestions write SetTwoPhaseSuggestions default False;
   end;
 
 implementation
@@ -426,6 +442,10 @@ begin
   FOnReplace := nil;
   FChunkedCheck := False;
   FChunkSize := 16384;
+  FTwoPhaseSuggestions := False;
+  FSuggesting := False;
+  FSuggestionThread := nil;
+  SetLength(FSuggestionErrors, 0);
   FAppliedErrorCount := 0;
   FLastPartialApplyTick := 0;
   FCheckVisibleOnly := False;
@@ -477,6 +497,19 @@ begin
     begin
       Sleep(10);
       CheckSynchronize; // Process any pending Synchronize calls (OnBackgroundDone)
+    end;
+  end;
+
+  // Wait for the suggestion pass if it is still running. Both passes use
+  // the same Hunspell checker instance, so the suggestion pass must be
+  // finished before the dictionary is released.
+  if FSuggesting then
+  begin
+    InterlockedExchange(FCancelRequested, 1);
+    while FSuggesting do
+    begin
+      Sleep(10);
+      CheckSynchronize;
     end;
   end;
 
@@ -568,10 +601,15 @@ begin
   // point we assume the user will configure the component in Form.OnCreate,
   // and the corresponding setters will trigger the load. Marking the source
   // as configured here also lets later Language changes trigger a reload.
-  if FEnabled and (FEngine = seHunspell) and (FLanguage <> '') then
+  // The source is marked as configured even when the component starts
+  // disabled, so a later Enabled := True can still trigger the dictionary
+  // load and match the behaviour of a component that was enabled in the
+  // designer.
+  if (FEngine = seHunspell) and (FLanguage <> '') then
   begin
     FDictionaryConfigured := True;
-    LoadHunDictionaryForLanguage;
+    if FEnabled then
+      LoadHunDictionaryForLanguage;
   end;
 
   if FEnabled and FCheckVisibleOnly and Assigned(FRichMemo) and not (csDesigning in ComponentState) then
@@ -929,6 +967,16 @@ begin
   end;
 end;
 
+procedure TSpellChecker.SetTwoPhaseSuggestions(AValue: boolean);
+begin
+  if FTwoPhaseSuggestions <> AValue then
+  begin
+    FTwoPhaseSuggestions := AValue;
+    if FEnabled and Assigned(FRichMemo) and not (csLoading in ComponentState) then
+      CheckNow;
+  end;
+end;
+
 function TSpellChecker.GetWinSupportedLanguages: TStrings;
   {$IFDEF WINDOWS}
 var
@@ -1038,6 +1086,17 @@ begin
     FDictionaryPendingAction := dpaUnload;
     InterlockedExchange(FCancelRequested, 1);
     Exit;
+  end;
+
+  // Wait for the suggestion pass before freeing the dictionary
+  if FSuggesting then
+  begin
+    InterlockedExchange(FCancelRequested, 1);
+    while FSuggesting do
+    begin
+      Sleep(5);
+      CheckSynchronize;
+    end;
   end;
 
   if Assigned(FHunSpellChecker) then
@@ -1218,6 +1277,18 @@ begin
   // Never start a Hunspell check while the dictionary is unloaded or being reloaded
   if (FEngine = seHunspell) and ((FHunSpellChecker = nil) or (not FHunDictionaryLoaded)) then
     Exit;
+
+  // The check pass and the suggestion pass share the same Hunspell
+  // checker instance, so the suggestion pass must not run concurrently
+  if FSuggesting then
+  begin
+    InterlockedExchange(FCancelRequested, 1);
+    while FSuggesting do
+    begin
+      Sleep(5);
+      CheckSynchronize;
+    end;
+  end;
 
   if FChecking then
   begin
@@ -1434,6 +1505,7 @@ var
   VisStart: integer = 0;
   VisEnd: integer = 0;
   OffsetBase: integer = 0;
+  DeferSuggestions: boolean = False;
   Ranges: array of record
     StartPos: integer;
     EndPos: integer;
@@ -1443,122 +1515,44 @@ var
 begin
   SetLength(FLastErrors, 0);
 
-  // Determine the byte range to check. In visible-only mode this is the
-  // region computed in StartCheck, otherwise the whole snapshot. The range
-  // is always expressed in bytes into the UTF-8 FCheckText snapshot.
-  if FCheckVisibleOnly then
-  begin
-    RangeStart := FCheckByteStart;
-    RangeEnd := FCheckByteEnd;
-  end
-  else
-  begin
-    RangeStart := 1;
-    RangeEnd := Length(FCheckText);
-  end;
+  // When two-phase mode is active, disable suggestion generation for this
+  // pass. Suggestions are produced later by a separate background pass, so
+  // the underlines appear on screen as soon as this pass completes
+  DeferSuggestions := FTwoPhaseSuggestions and (FEngine = seHunspell) and Assigned(FHunSpellChecker);
+  if DeferSuggestions then
+    FHunSpellChecker.IncludeSuggestions := False;
+  try
 
-  if RangeEnd < RangeStart then
-    Exit;
-
-  // Chunked mode is driven by the size of the range that is actually being
-  // checked, so it works the same way for the whole document and for the
-  // visible area only.
-  UseChunked := FChunkedCheck and (FChunkSize > 0) and ((RangeEnd - RangeStart + 1) > FChunkSize);
-
-  if not UseChunked then
-  begin
-    // Single pass on the chosen range
-    ChunkText := Copy(FCheckText, RangeStart, RangeEnd - RangeStart + 1);
-    // OffsetBase is the character offset of the range start in the full
-    // text. It is added to every error offset so the caller can draw
-    // underlines against the whole document.
-    OffsetBase := SpellOffsetBase(FCheckText, RangeStart - 1);
-
-    if FEngine = seHunspell then
+    // Determine the byte range to check. In visible-only mode this is the
+    // region computed in StartCheck, otherwise the whole snapshot. The range
+    // is always expressed in bytes into the UTF-8 FCheckText snapshot.
+    if FCheckVisibleOnly then
     begin
-      if Assigned(FHunSpellChecker) then
-        ChunkErrors := TSpell.HunCheckText(ChunkText, FHunSpellChecker, FOptions, FAddEmptySuggestions)
-      else
-        SetLength(ChunkErrors, 0);
+      RangeStart := FCheckByteStart;
+      RangeEnd := FCheckByteEnd;
     end
     else
-      ChunkErrors := TSpell.CheckText(ChunkText, FLanguage, FOptions, FAddEmptySuggestions);
-
-    SetLength(FLastErrors, Length(ChunkErrors));
-    for i := 0 to High(ChunkErrors) do
     begin
-      FLastErrors[i] := ChunkErrors[i];
-      FLastErrors[i].Offset := ChunkErrors[i].Offset + OffsetBase;
+      RangeStart := 1;
+      RangeEnd := Length(FCheckText);
     end;
-    Exit;
-  end;
 
-  TotalLen := Length(FCheckText);
+    if RangeEnd < RangeStart then
+      Exit;
 
-  // Build the list of ranges in the order they should be checked. In
-  // visible-only mode the checked range is already the visible area, so
-  // there is only one range. In full mode the area currently visible in
-  // the memo goes first so the user sees fresh results where he is looking,
-  // and the remaining parts are processed from the top of the document
-  // downwards to keep the perceived order predictable.
-  SetLength(Ranges, 0);
-  if FCheckVisibleOnly then
-  begin
-    SetLength(Ranges, 1);
-    Ranges[0].StartPos := RangeStart;
-    Ranges[0].EndPos := RangeEnd;
-  end
-  else if GetVisibleTextRange(VisStart, VisEnd) and (VisStart > 1) and (VisStart <= TotalLen) then
-  begin
-    if VisEnd > TotalLen then
-      VisEnd := TotalLen;
-    // Convert the character offsets reported by the widget into byte
-    // offsets into the UTF-8 snapshot, because Ranges are consumed as
-    // byte positions by the chunk loop below. Without this conversion
-    // the "visible area first" priority is wrong on multibyte text.
-    VisStart := UTF8CodepointToByteIndex(PChar(FCheckText), TotalLen, VisStart);
-    VisEnd := UTF8CodepointToByteIndex(PChar(FCheckText), TotalLen, VisEnd);
-    SetLength(Ranges, 3);
-    Ranges[0].StartPos := VisStart;
-    Ranges[0].EndPos := VisEnd;
-    Ranges[1].StartPos := 1;
-    Ranges[1].EndPos := VisStart - 1;
-    Ranges[2].StartPos := VisEnd + 1;
-    Ranges[2].EndPos := TotalLen;
-  end
-  else
-  begin
-    SetLength(Ranges, 1);
-    Ranges[0].StartPos := 1;
-    Ranges[0].EndPos := TotalLen;
-  end;
+    // Chunked mode is driven by the size of the range that is actually being
+    // checked, so it works the same way for the whole document and for the
+    // visible area only.
+    UseChunked := FChunkedCheck and (FChunkSize > 0) and ((RangeEnd - RangeStart + 1) > FChunkSize);
 
-  for r := 0 to High(Ranges) do
-  begin
-    if Ranges[r].StartPos > Ranges[r].EndPos then
-      Continue;
-    ChunkStart := Ranges[r].StartPos;
-    // Compute the character offset of ChunkStart in the full text. The
-    // spell checker returns offsets in characters (UTF-16 code units on
-    // Windows), while ChunkStart is a byte position in the UTF-8 snapshot.
-    // Adding the byte offset directly would shift every underline by the
-    // number of multi-byte characters that precede the chunk.
-    OffsetBase := SpellOffsetBase(FCheckText, ChunkStart - 1);
-    while ChunkStart <= Ranges[r].EndPos do
+    if not UseChunked then
     begin
-      if InterlockedCompareExchange(FCancelRequested, 0, 0) = 1 then
-        Exit;
-
-      ChunkEnd := ChunkStart + FChunkSize - 1;
-      if ChunkEnd > Ranges[r].EndPos then
-        ChunkEnd := Ranges[r].EndPos;
-      // Extend to the next whitespace so a word is not split in half. The
-      // extension is capped to avoid scanning megabytes when no whitespace
-      // exists for a long time (for example a base64 blob in the text).
-      MaxExtend := ChunkStart + FChunkSize * 4;
-      while (ChunkEnd < Ranges[r].EndPos) and (ChunkEnd < MaxExtend) and not (FCheckText[ChunkEnd] in [' ', #9, #10, #13]) do
-        Inc(ChunkEnd);
-      ChunkText := Copy(FCheckText, ChunkStart, ChunkEnd - ChunkStart + 1);
+      // Single pass on the chosen range
+      ChunkText := Copy(FCheckText, RangeStart, RangeEnd - RangeStart + 1);
+      // OffsetBase is the character offset of the range start in the full
+      // text. It is added to every error offset so the caller can draw
+      // underlines against the whole document.
+      OffsetBase := SpellOffsetBase(FCheckText, RangeStart - 1);
 
       if FEngine = seHunspell then
       begin
@@ -1570,34 +1564,124 @@ begin
       else
         ChunkErrors := TSpell.CheckText(ChunkText, FLanguage, FOptions, FAddEmptySuggestions);
 
-      // Shift offsets from chunk local to full text coordinates. The base
-      // is a character offset, matching the unit used by the checker.
+      SetLength(FLastErrors, Length(ChunkErrors));
       for i := 0 to High(ChunkErrors) do
-        ChunkErrors[i].Offset := ChunkErrors[i].Offset + OffsetBase;
-
-      // Update the character offset for the next iteration by counting the
-      // characters in the bytes that were just consumed.
-      Inc(OffsetBase, SpellOffsetBase(ChunkText, Length(ChunkText)));
-
-      // Append to the accumulated error list. Assignment is used instead of
-      // Move because TSpellError contains managed fields (string, dyn array).
-      Base := Length(FLastErrors);
-      SetLength(FLastErrors, Base + Length(ChunkErrors));
-      for i := 0 to High(ChunkErrors) do
-        FLastErrors[Base + i] := ChunkErrors[i];
-
-      // Hand off the newly found errors to the main thread for drawing.
-      // Only the visible range (Ranges[0]) should trigger an incremental
-      // draw. Off screen chunks would still force the main thread to
-      // repaint the visible area after every chunk with no visible benefit
-      // and are the main source of hangs on large documents with dense
-      // errors. Their errors are still collected in FLastErrors and drawn
-      // once by the final atomic ApplyErrors call in OnBackgroundDone.
-      if FAutoApply and not FDestroying and (r = 0) then
-        TThread.Synchronize(nil, @ApplyPartialErrors);
-
-      ChunkStart := ChunkEnd + 1;
+      begin
+        FLastErrors[i] := ChunkErrors[i];
+        FLastErrors[i].Offset := ChunkErrors[i].Offset + OffsetBase;
+      end;
+      Exit;
     end;
+
+    TotalLen := Length(FCheckText);
+
+    // Build the list of ranges in the order they should be checked. In
+    // visible-only mode the checked range is already the visible area, so
+    // there is only one range. In full mode the area currently visible in
+    // the memo goes first so the user sees fresh results where he is looking,
+    // and the remaining parts are processed from the top of the document
+    // downwards to keep the perceived order predictable.
+    SetLength(Ranges, 0);
+    if FCheckVisibleOnly then
+    begin
+      SetLength(Ranges, 1);
+      Ranges[0].StartPos := RangeStart;
+      Ranges[0].EndPos := RangeEnd;
+    end
+    else if GetVisibleTextRange(VisStart, VisEnd) and (VisStart > 1) and (VisStart <= TotalLen) then
+    begin
+      if VisEnd > TotalLen then
+        VisEnd := TotalLen;
+      // Convert the character offsets reported by the widget into byte
+      // offsets into the UTF-8 snapshot, because Ranges are consumed as
+      // byte positions by the chunk loop below. Without this conversion
+      // the "visible area first" priority is wrong on multibyte text.
+      VisStart := UTF8CodepointToByteIndex(PChar(FCheckText), TotalLen, VisStart);
+      VisEnd := UTF8CodepointToByteIndex(PChar(FCheckText), TotalLen, VisEnd);
+      SetLength(Ranges, 3);
+      Ranges[0].StartPos := VisStart;
+      Ranges[0].EndPos := VisEnd;
+      Ranges[1].StartPos := 1;
+      Ranges[1].EndPos := VisStart - 1;
+      Ranges[2].StartPos := VisEnd + 1;
+      Ranges[2].EndPos := TotalLen;
+    end
+    else
+    begin
+      SetLength(Ranges, 1);
+      Ranges[0].StartPos := 1;
+      Ranges[0].EndPos := TotalLen;
+    end;
+
+    for r := 0 to High(Ranges) do
+    begin
+      if Ranges[r].StartPos > Ranges[r].EndPos then
+        Continue;
+      ChunkStart := Ranges[r].StartPos;
+      // Compute the character offset of ChunkStart in the full text. The
+      // spell checker returns offsets in characters (UTF-16 code units on
+      // Windows), while ChunkStart is a byte position in the UTF-8 snapshot.
+      // Adding the byte offset directly would shift every underline by the
+      // number of multi-byte characters that precede the chunk.
+      OffsetBase := SpellOffsetBase(FCheckText, ChunkStart - 1);
+      while ChunkStart <= Ranges[r].EndPos do
+      begin
+        if InterlockedCompareExchange(FCancelRequested, 0, 0) = 1 then
+          Exit;
+
+        ChunkEnd := ChunkStart + FChunkSize - 1;
+        if ChunkEnd > Ranges[r].EndPos then
+          ChunkEnd := Ranges[r].EndPos;
+        // Extend to the next whitespace so a word is not split in half. The
+        // extension is capped to avoid scanning megabytes when no whitespace
+        // exists for a long time (for example a base64 blob in the text).
+        MaxExtend := ChunkStart + FChunkSize * 4;
+        while (ChunkEnd < Ranges[r].EndPos) and (ChunkEnd < MaxExtend) and not (FCheckText[ChunkEnd] in [' ', #9, #10, #13]) do
+          Inc(ChunkEnd);
+        ChunkText := Copy(FCheckText, ChunkStart, ChunkEnd - ChunkStart + 1);
+
+        if FEngine = seHunspell then
+        begin
+          if Assigned(FHunSpellChecker) then
+            ChunkErrors := TSpell.HunCheckText(ChunkText, FHunSpellChecker, FOptions, FAddEmptySuggestions)
+          else
+            SetLength(ChunkErrors, 0);
+        end
+        else
+          ChunkErrors := TSpell.CheckText(ChunkText, FLanguage, FOptions, FAddEmptySuggestions);
+
+        // Shift offsets from chunk local to full text coordinates. The base
+        // is a character offset, matching the unit used by the checker.
+        for i := 0 to High(ChunkErrors) do
+          ChunkErrors[i].Offset := ChunkErrors[i].Offset + OffsetBase;
+
+        // Update the character offset for the next iteration by counting the
+        // characters in the bytes that were just consumed.
+        Inc(OffsetBase, SpellOffsetBase(ChunkText, Length(ChunkText)));
+
+        // Append to the accumulated error list. Assignment is used instead of
+        // Move because TSpellError contains managed fields (string, dyn array).
+        Base := Length(FLastErrors);
+        SetLength(FLastErrors, Base + Length(ChunkErrors));
+        for i := 0 to High(ChunkErrors) do
+          FLastErrors[Base + i] := ChunkErrors[i];
+
+        // Hand off the newly found errors to the main thread for drawing.
+        // Only the visible range (Ranges[0]) should trigger an incremental
+        // draw. Off screen chunks would still force the main thread to
+        // repaint the visible area after every chunk with no visible benefit
+        // and are the main source of hangs on large documents with dense
+        // errors. Their errors are still collected in FLastErrors and drawn
+        // once by the final atomic ApplyErrors call in OnBackgroundDone.
+        if FAutoApply and not FDestroying and (r = 0) then
+          TThread.Synchronize(nil, @ApplyPartialErrors);
+
+        ChunkStart := ChunkEnd + 1;
+      end;
+    end;
+  finally
+    if DeferSuggestions and Assigned(FHunSpellChecker) then
+      FHunSpellChecker.IncludeSuggestions := True;
   end;
 end;
 
@@ -1608,14 +1692,14 @@ const
   // runs and repaint the affected lines far too often, which on large
   // documents with many underlines turns the whole check into what looks
   // like a freeze near the end, where the error density is highest.
-  PARTIAL_APPLY_INTERVAL_MS = 400;
+  PARTIAL_APPLY_INTERVAL_MS = 300;
   // If more than this many errors are waiting to be drawn, skip the
   // incremental pass entirely. A single very large batch can block the
   // main thread for seconds, and the final full apply in OnBackgroundDone
   // will draw everything anyway, so no underline is ever lost. Lower this
   // value if freezes persist, raise it if the incremental feedback feels
   // too coarse on well behaved documents.
-  PARTIAL_APPLY_MAX_BATCH = 200;
+  PARTIAL_APPLY_MAX_BATCH = 1000;
 var
   i: integer = 0;
   NewCount: integer = 0;
@@ -1791,6 +1875,12 @@ begin
     end;
   end;
 
+  // Start the second pass that generates suggestions for the errors just
+  // drawn. Running it now means the user will see the suggestions as soon
+  // as the context menu opens over one of these errors
+  if FTwoPhaseSuggestions and (FEngine = seHunspell) and (Length(FLastErrors) > 0) and not FTextChangedSinceCheck then
+    StartSuggestionPass;
+
   ErrorCount := Length(FLastErrors);
 
   if Assigned(FOnSpellCheckComplete) then
@@ -1801,6 +1891,92 @@ begin
     FPendingCheck := False;
     StartCheck;
   end;
+end;
+
+procedure TSpellChecker.StartSuggestionPass;
+var
+  i: integer;
+begin
+  if FSuggesting then
+    Exit;
+  if FDestroying then
+    Exit;
+  if not Assigned(FHunSpellChecker) then
+    Exit;
+  if Length(FLastErrors) = 0 then
+    Exit;
+
+  SetLength(FSuggestionErrors, Length(FLastErrors));
+  for i := 0 to High(FSuggestionErrors) do
+    SetLength(FSuggestionErrors[i], 0);
+
+  FSuggesting := True;
+  RunAsync(FSuggestionThread, @DoBackgroundSuggestions, @OnSuggestionsReady);
+end;
+
+procedure TSpellChecker.DoBackgroundSuggestions;
+var
+  i, j: integer;
+  word: string;
+  Sug: TStringArray;
+begin
+  for i := 0 to High(FLastErrors) do
+  begin
+    if FDestroying then
+      Exit;
+    if InterlockedCompareExchange(FCancelRequested, 0, 0) = 1 then
+      Exit;
+    if not Assigned(FHunSpellChecker) then
+      Exit;
+
+    // Extract the misspelled word from the snapshot text. The offsets in
+    // FLastErrors are character based, so UTF8Copy is the right tool here
+    word := UTF8Copy(FCheckText, FLastErrors[i].Offset + 1, FLastErrors[i].Length);
+    if word = '' then
+      Continue;
+
+    Sug := FHunSpellChecker.Suggest(word);
+
+    SetLength(FSuggestionErrors[i], Length(Sug));
+    for j := 0 to High(Sug) do
+      FSuggestionErrors[i][j] := Sug[j];
+  end;
+end;
+
+procedure TSpellChecker.OnSuggestionsReady;
+var
+  i: integer;
+begin
+  FSuggesting := False;
+  FSuggestionThread := nil;
+
+  if FDestroying then
+    Exit;
+  if FTextChangedSinceCheck then
+    Exit;
+  if InterlockedCompareExchange(FCancelRequested, 0, 0) = 1 then
+    Exit;
+
+  // Attach the new suggestions to both the internal error list and the
+  // RichSpellChecker records, so the context menu shows them the next
+  // time the user opens it over one of these errors
+  for i := 0 to High(FLastErrors) do
+  begin
+    if i > High(FSuggestionErrors) then
+      Break;
+    if Length(FSuggestionErrors[i]) = 0 then
+      Continue;
+
+    FLastErrors[i].Replacements := FSuggestionErrors[i];
+
+    if Assigned(FSpellChecker) then
+      FSpellChecker.UpdateErrorSuggestions(
+        FLastErrors[i].Offset,
+        FLastErrors[i].Length,
+        FSuggestionErrors[i]);
+  end;
+
+  SetLength(FSuggestionErrors, 0);
 end;
 
 procedure TSpellChecker.ApplyErrors(const AErrors: RichSpellChecker.TSpellErrorArray);
@@ -1841,6 +2017,18 @@ begin
     FDictionaryPendingAction := dpaReload;
     InterlockedExchange(FCancelRequested, 1);
     Exit;
+  end;
+
+  // A running suggestion pass uses the current dictionary instance, so
+  // wait for it to finish before replacing the dictionary
+  if FSuggesting then
+  begin
+    InterlockedExchange(FCancelRequested, 1);
+    while FSuggesting do
+    begin
+      Sleep(5);
+      CheckSynchronize;
+    end;
   end;
 
   // Prevent concurrent downloads
