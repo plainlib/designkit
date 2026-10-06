@@ -125,6 +125,7 @@ type
     FPrevOnChange: TNotifyEvent;           // saved original RichMemo.OnChange
     FContextMenuOpen: boolean;             // True while context menu is visible
     FReplaceJustDone: boolean;             // True after replacement to avoid duplicate check
+    FWinSupportedLanguages: TStringList; // cached TStrings view for the SupportedLanguages property
 
     procedure SetRichMemo(AValue: TRichMemo);
     procedure SetLanguage(const AValue: string);
@@ -144,6 +145,7 @@ type
     procedure SetChunkedCheck(AValue: boolean);
     procedure SetChunkSize(AValue: integer);
     procedure SetCheckVisibleOnly(AValue: boolean);
+    function GetWinSupportedLanguages: TStrings;
     procedure StartScrollTimer;
     procedure StopScrollTimer;
     procedure OnScrollTimerTick(Sender: TObject);
@@ -180,12 +182,16 @@ type
   public
     constructor Create(AOwner: TComponent); override;
     destructor Destroy; override;
+
     // Start an immediate spell check (in background)
     procedure CheckNow;
+
     // Request cancellation of the currently running check (result will be ignored)
     procedure CancelCheck;
+
     // Clear all existing error underlines
     procedure ClearErrors;
+
     // Draw the current spell errors (last check result) as underlines on any
     // RichMemo that displays the same text. Useful when the same text is
     // mirrored in another control (for example a grid cell) and should be
@@ -193,14 +199,26 @@ type
     // check is started; interaction (context menu, suggestions) still happens
     // only in the memo currently assigned to RichMemo.
     procedure ApplyErrorsTo(ATargetMemo: TRichMemo);
+
     // Returns True if a check is currently running
     function IsChecking: boolean;
+
+    // Returns the list of BCP-47 tags supported by the current engine, empty for Hunspell
+    // Pass AForceRefresh to re-read the list from Windows instead of using the cache
+    function GetSupportedLanguages(AForceRefresh: boolean = False): TStringArray;
+
+    // Returns True when the given BCP-47 tag is usable with the current engine
+    function IsLanguageSupported(const ALanguageTag: string): boolean;
+
     // Manually show context menu with suggestions at given client coordinates
     function ShowContextMenu(X, Y: integer): boolean;
+
     // Load Hunspell dictionary from files
     procedure LoadHunDictionaryFromFiles(const AFFFileName, DICFileName: string);
+
     // Load Hunspell dictionary from streams
     procedure LoadHunDictionaryFromStream(AFFStream, DICStream: TStream);
+
     // Unload Hunspell dictionary (clears checker and underlines if engine is Hunspell)
     procedure UnloadHunDictionary;
   published
@@ -298,6 +316,9 @@ type
     // RichMemo.OnChange does not fire in this case, so use this event if you
     // need to react to a replacement.
     property OnReplace: TSpellReplaceEvent read FOnReplace write FOnReplace;
+
+    // Read only list of BCP-47 tags supported by the current engine, visible in the Object Inspector
+    property WinSupportedLanguages: TStrings read GetWinSupportedLanguages;
   end;
 
 implementation
@@ -415,6 +436,7 @@ begin
   FCheckByteEnd := 0;
   FLastVisChangeTick := 0;
   FScrollSettleDelay := 400;
+  FWinSupportedLanguages := nil;
 
   // Default integration settings
   FPopupMenu := nil;
@@ -488,6 +510,9 @@ begin
 
   // Clear error array
   SetLength(FLastErrors, 0);
+
+  if Assigned(FWinSupportedLanguages) then
+    FreeAndNil(FWinSupportedLanguages);
 
   inherited Destroy;
 end;
@@ -904,6 +929,27 @@ begin
   end;
 end;
 
+function TSpellChecker.GetWinSupportedLanguages: TStrings;
+  {$IFDEF WINDOWS}
+var
+  Langs: TSupportedLanguages = nil;
+  i: integer = 0;
+  {$ENDIF}
+begin
+  if FWinSupportedLanguages = nil then
+    FWinSupportedLanguages := TStringList.Create;
+  FWinSupportedLanguages.Clear;
+
+  {$IFDEF WINDOWS}
+  // always report the Windows list, independent of the current engine
+  Langs := WinSpellChecker.GetSupportedSpellCheckerLanguages;
+  for i := 0 to High(Langs) do
+    FWinSupportedLanguages.Add(UTF8Encode(Langs[i]));
+  {$ENDIF}
+
+  Result := FWinSupportedLanguages;
+end;
+
 procedure TSpellChecker.StartScrollTimer;
 begin
   if FScrollTimer = nil then
@@ -1316,6 +1362,53 @@ end;
 function TSpellChecker.IsChecking: boolean;
 begin
   Result := FChecking;
+end;
+
+function TSpellChecker.GetSupportedLanguages(AForceRefresh: boolean = False): TStringArray;
+  {$IFDEF WINDOWS}
+var
+  Langs: TSupportedLanguages = nil;
+  i: integer = 0;
+  {$ENDIF}
+begin
+  Result := nil;
+  {$IFDEF WINDOWS}
+  // the system list is only meaningful for the Windows engine
+  if FEngine <> seWindows then
+    Exit;
+
+  if AForceRefresh then
+    WinSpellChecker.ResetSupportedLanguagesCache;
+
+  Langs := WinSpellChecker.GetSupportedSpellCheckerLanguages;
+  SetLength(Result, Length(Langs));
+  for i := 0 to High(Langs) do
+    Result[i] := UTF8Encode(Langs[i]);
+  {$ENDIF}
+end;
+
+function TSpellChecker.IsLanguageSupported(const ALanguageTag: string): boolean;
+  {$IFDEF WINDOWS}
+var
+  ATag: widestring = '';
+  {$ENDIF}
+begin
+  Result := False;
+  if ALanguageTag = '' then
+    Exit;
+
+  {$IFDEF WINDOWS}
+  if FEngine = seWindows then
+  begin
+    // the unit is already pulled in by the WINDOWS define, no extra uses needed
+    ATag := WinSpellChecker.NormalizeLanguageTag(ALanguageTag);
+    Result := WinSpellChecker.IsLanguageSupported(ATag);
+    Exit;
+  end;
+  {$ENDIF}
+
+  // Hunspell has no fixed list, a language counts as supported once its dictionary is loaded
+  Result := FHunDictionaryLoaded;
 end;
 
 function TSpellChecker.ShowContextMenu(X, Y: integer): boolean;
