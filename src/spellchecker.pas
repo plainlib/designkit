@@ -558,19 +558,19 @@ begin
 
   if (Operation = opRemove) and (AComponent = FRichMemo) then
   begin
-    if Assigned(FPrevContextPopup) then
-      FRichMemo.OnContextPopup := FPrevContextPopup;
-    if Assigned(FPrevOnChange) then
-      FRichMemo.OnChange := FPrevOnChange;
+    // Drop the reference first so our event handlers exit immediately
+    // if the destruction sequence fires them. Do not touch the memo: it
+    // is already being destroyed and restoring handlers on it can raise
+    // an access violation that aborts the deletion.
+    FRichMemo := nil;
+
+    // The internal checker is owned by the memo and will be freed by it,
+    // so only clear the pointer here instead of calling FreeAndNil.
+    FSpellChecker := nil;
+
     FPrevContextPopup := nil;
     FPrevOnChange := nil;
-
-    if Assigned(FSpellChecker) then
-    begin
-      FreeAndNil(FSpellChecker);
-    end;
     StopScrollTimer;
-    FRichMemo := nil;
     if Assigned(FDebounceTimer) then
       FDebounceTimer.Enabled := False;
   end
@@ -1055,8 +1055,7 @@ begin
     // polling timer must not react to edit induced range changes. Only a
     // real scroll, i.e. a range change with no recent edit, arms the
     // settle timer and leads to a fresh visible-only check.
-    if (FLastTextEditTick <> 0) and
-       (GetTickCount64 - FLastTextEditTick < QWord(FScrollSettleDelay)) then
+    if (FLastTextEditTick <> 0) and (GetTickCount64 - FLastTextEditTick < QWord(FScrollSettleDelay)) then
     begin
       FLastVisChangeTick := 0;
       Exit;
@@ -1154,6 +1153,12 @@ begin
   // If the change was caused by our own internal operation
   // (e.g. applying spell-check underlines), do not notify the user.
   if FInternalChange then Exit;
+
+  // The memo may already be nil or in the middle of destruction when
+  // its destructor fires OnChange. Exit early so we never dereference
+  // a half destroyed control.
+  if not Assigned(FRichMemo) then Exit;
+  if csDestroying in FRichMemo.ComponentState then Exit;
 
   // Any user visible change invalidates the snapshot used by the running
   // check. Track it with a flag so ApplyPartialErrors and OnBackgroundDone
