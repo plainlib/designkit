@@ -243,7 +243,9 @@ type
     // Hunspell engine only supports scoSpelling (other options are ignored).
     property Options: TSpellCheckOptions read FOptions write SetOptions default [scoSpelling];
 
-    // Include errors that have no suggestions
+    // Include errors that have no suggestions. When disabled, the two-phase
+    // suggestion mode is skipped because its first pass runs without
+    // suggestions and would drop every error through this filter.
     property AddEmptySuggestions: boolean read FAddEmptySuggestions write FAddEmptySuggestions default True;
 
     // Automatically check after text changes (with debounce)
@@ -1528,10 +1530,12 @@ var
 begin
   SetLength(FLastErrors, 0);
 
-  // When two-phase mode is active, disable suggestion generation for this
-  // pass. Suggestions are produced later by a separate background pass, so
-  // the underlines appear on screen as soon as this pass completes
-  DeferSuggestions := FTwoPhaseSuggestions and (FEngine = seHunspell) and Assigned(FHunSpellChecker);
+  // Two-phase mode cannot coexist with AddEmptySuggestions disabled. The
+  // first pass runs with suggestions turned off, so every error would look
+  // like an error without suggestions and the AddEmptySuggestions filter
+  // inside HunCheckText would drop all of them. In this combination fall
+  // back to the single pass so suggestions are available for the filter.
+  DeferSuggestions := FTwoPhaseSuggestions and (FEngine = seHunspell) and Assigned(FHunSpellChecker) and FAddEmptySuggestions;
   if DeferSuggestions then
     FHunSpellChecker.IncludeSuggestions := False;
   try
