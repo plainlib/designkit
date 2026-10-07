@@ -113,7 +113,6 @@ type
     FSubMenuIndex: integer;
 
     FSpellChecker: TRichSpellChecker;
-    FCheckThread: TThread;
     FChecking: boolean;
     FTwoPhaseSuggestions: boolean; // When True, suggestions are generated in a separate background pass
     FSuggestionErrors: array of TStringArray; // Suggestion lists collected by the second pass
@@ -414,7 +413,6 @@ begin
   FInternalChange := False;
   FCancelRequested := 0;
   FTextChangedSinceCheck := False;
-  FCheckThread := nil;
   FSpellChecker := nil;
   FLastErrors := nil;
   FDebounceTimer := nil;
