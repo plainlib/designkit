@@ -591,8 +591,11 @@ begin
   begin
     FPrevOnChange := FRichMemo.OnChange;
     FRichMemo.OnChange := @OnRichMemoChange;
-    FPrevContextPopup := FRichMemo.OnContextPopup;
-    FRichMemo.OnContextPopup := @OnRichMemoContextPopup;
+    if FAutoContextMenu then
+    begin
+      FPrevContextPopup := FRichMemo.OnContextPopup;
+      FRichMemo.OnContextPopup := @OnRichMemoContextPopup;
+    end;
   end;
 
   // Auto-load when the LFM already specified a Hunspell engine and a language.
@@ -673,7 +676,8 @@ begin
         FPrevContextPopup := FRichMemo.OnContextPopup;
 
       FRichMemo.OnChange := @OnRichMemoChange;
-      FRichMemo.OnContextPopup := @OnRichMemoContextPopup;
+      if FAutoContextMenu then
+        FRichMemo.OnContextPopup := @OnRichMemoContextPopup;
     end;
 
     FSpellChecker := TRichSpellChecker.Create(FRichMemo);
@@ -1185,7 +1189,10 @@ begin
 
   if Handled then Exit;
 
-  if Assigned(FSpellChecker) then
+  // Auto suggestions are disabled, let the default PopupMenu handling work.
+  // This guard is kept for the rare case when the handler is still attached
+  // because the flag was toggled after the memo was already assigned.
+  if FAutoContextMenu and Assigned(FSpellChecker) then
   begin
     FContextMenuOpen := True;
     try
@@ -1215,7 +1222,13 @@ begin
     if Handled then Exit;
   end;
 
-  if Assigned(FRichMemo) and Assigned(FRichMemo.PopupMenu) then
+  // Let the system handle the fallback PopupMenu when the internal checker
+  // already manages that exact menu. Showing it here as well makes the
+  // checker lose track of its own suggestions submenu, and the menu then
+  // raises EMenuError ("Sub-menu is not in menu") when it is closed.
+  // When the checker does not own this menu, pop it up manually, because
+  // we are still inside OnContextPopup and Handled is False.
+  if Assigned(FRichMemo) and Assigned(FRichMemo.PopupMenu) and (FRichMemo.PopupMenu <> FPopupMenu) then
   begin
     ScreenPoint := FRichMemo.ClientToScreen(MousePos);
     FRichMemo.PopupMenu.PopUp(ScreenPoint.X, ScreenPoint.Y);
