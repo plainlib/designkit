@@ -34,7 +34,8 @@ uses
   OneShotThread,
   OneShotTimer,
   Downloader,
-  stringhelper;
+  stringhelper,
+  osutils;
 
 type
   // Event fired after spell check results have been applied to the RichMemo
@@ -1055,12 +1056,12 @@ begin
     // polling timer must not react to edit induced range changes. Only a
     // real scroll, i.e. a range change with no recent edit, arms the
     // settle timer and leads to a fresh visible-only check.
-    if (FLastTextEditTick <> 0) and (GetTickCount64 - FLastTextEditTick < QWord(FScrollSettleDelay)) then
+    if (FLastTextEditTick <> 0) and (TOS.GetTickCountXp - FLastTextEditTick < QWord(FScrollSettleDelay)) then
     begin
       FLastVisChangeTick := 0;
       Exit;
     end;
-    FLastVisChangeTick := GetTickCount64;
+    FLastVisChangeTick := TOS.GetTickCountXp;
     CancelCheck;
     Exit;
   end;
@@ -1068,7 +1069,7 @@ begin
   // The range has not changed since the last tick. Wait until it has been
   // stable long enough, so the actual check only starts after the user has
   // stopped scrolling.
-  Now := GetTickCount64;
+  Now := TOS.GetTickCountXp;
   if (FLastVisChangeTick = 0) or (Now - FLastVisChangeTick < QWord(FScrollSettleDelay)) then
     Exit;
 
@@ -1165,7 +1166,7 @@ begin
   // can skip their work without comparing the full text on every chunk,
   // which is very expensive on large documents.
   FTextChangedSinceCheck := True;
-  FLastTextEditTick := GetTickCount64;
+  FLastTextEditTick := TOS.GetTickCountXp;
 
   // Call original RichMemo.OnChange handler if assigned
   if Assigned(FPrevOnChange) then
@@ -1764,7 +1765,7 @@ begin
 
   // Throttle small batches by time so the widget is not repainted on every
   // chunk. The first call always passes because the tick is still zero.
-  Now := GetTickCount64;
+  Now := TOS.GetTickCountXp;
   if (FLastPartialApplyTick <> 0) and (Now - FLastPartialApplyTick < QWord(PARTIAL_APPLY_INTERVAL_MS)) then
     Exit;
   FLastPartialApplyTick := Now;
