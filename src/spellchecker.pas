@@ -84,6 +84,7 @@ type
     FCheckByteStart: integer;      // Byte offset in FCheckText of the range being checked
     FCheckByteEnd: integer;        // Byte offset in FCheckText of the range being checked
     FLastVisChangeTick: QWord;     // When the visible range last changed
+    FLastTextEditTick: QWord;      // When the text was last edited by the user
     FScrollSettleDelay: integer;   // Stability time before a visible-only check runs
 
     // Async dictionary loading state
@@ -457,6 +458,7 @@ begin
   FCheckByteStart := 1;
   FCheckByteEnd := 0;
   FLastVisChangeTick := 0;
+  FLastTextEditTick := 0;
   FScrollSettleDelay := 400;
   FWinSupportedLanguages := nil;
 
@@ -1046,6 +1048,21 @@ begin
   begin
     FLastVisStart := VisStart;
     FLastVisEnd := VisEnd;
+    // A text edit shifts the visible character range because positions
+    // after the caret move, so the polling timer would treat every
+    // keystroke as a scroll and keep arming checks. This is very
+    // noticeable during typing on Linux where the check is slower. Both
+    // with RealTime on (the debounce timer already refreshes after edits)
+    // and with RealTime off (no automatic check should run at all) the
+    // polling timer must not react to edit induced range changes. Only a
+    // real scroll, i.e. a range change with no recent edit, arms the
+    // settle timer and leads to a fresh visible-only check.
+    if (FLastTextEditTick <> 0) and
+       (GetTickCount64 - FLastTextEditTick < QWord(FScrollSettleDelay)) then
+    begin
+      FLastVisChangeTick := 0;
+      Exit;
+    end;
     FLastVisChangeTick := GetTickCount64;
     CancelCheck;
     Exit;
@@ -1145,6 +1162,7 @@ begin
   // can skip their work without comparing the full text on every chunk,
   // which is very expensive on large documents.
   FTextChangedSinceCheck := True;
+  FLastTextEditTick := GetTickCount64;
 
   // Call original RichMemo.OnChange handler if assigned
   if Assigned(FPrevOnChange) then
