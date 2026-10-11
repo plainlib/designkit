@@ -1161,6 +1161,20 @@ begin
   if not Assigned(FRichMemo) then Exit;
   if csDestroying in FRichMemo.ComponentState then Exit;
 
+  // A RichMemo can fire OnChange for reasons other than a user text edit
+  // (first paint, focus change, formatting, line ending normalization).
+  // Compare with the snapshot so those events do not invalidate a check
+  // that is already in flight. The snapshot is empty before the very
+  // first check; in that case the change is treated as real and the
+  // usual guard in OnBackgroundDone will still discard a stale result
+  // if the text moved on afterwards.
+  if (FCheckText <> '') and FRichMemo.Text.EqualNormalized(FCheckText) then
+  begin
+    if Assigned(FPrevOnChange) then
+      FPrevOnChange(Sender);
+    Exit;
+  end;
+
   // Any user visible change invalidates the snapshot used by the running
   // check. Track it with a flag so ApplyPartialErrors and OnBackgroundDone
   // can skip their work without comparing the full text on every chunk,
@@ -1174,12 +1188,6 @@ begin
 
   if not FRealTime or not FEnabled then Exit;
   if not Assigned(FDebounceTimer) then Exit;
-
-  // A RichMemo can fire OnChange for non-text modifications such as
-  // applying spell underline formatting. Re-check only when the text
-  // actually differs from the last snapshot.
-  if (FCheckText <> '') and FRichMemo.Text.EqualNormalized(FCheckText) then
-    Exit;
 
   // If a replacement was just done, we want immediate check, not debounced
   if FReplaceJustDone then
