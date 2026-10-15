@@ -567,9 +567,11 @@ begin
     // an access violation that aborts the deletion.
     FRichMemo := nil;
 
-    // The internal checker is owned by the memo and will be freed by it,
-    // so only clear the pointer here instead of calling FreeAndNil.
-    FSpellChecker := nil;
+    // The checker is created with no owner, so the memo will not free it.
+    // Free it here to avoid leaking the checker and all of its internal
+    // objects when the memo is destroyed before this component.
+    if Assigned(FSpellChecker) then
+      FreeAndNil(FSpellChecker);
 
     FPrevContextPopup := nil;
     FPrevOnChange := nil;
