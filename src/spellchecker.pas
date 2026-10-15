@@ -131,6 +131,7 @@ type
     FContextMenuOpen: boolean;             // True while context menu is visible
     FReplaceJustDone: boolean;             // True after replacement to avoid duplicate check
     FWinSupportedLanguages: TStringList; // cached TStrings view for the SupportedLanguages property
+    FWinSpellAvailable: boolean; // True when the Windows spell checker API is present
 
     procedure SetRichMemo(AValue: TRichMemo);
     procedure SetLanguage(const AValue: string);
@@ -460,6 +461,7 @@ begin
   FLastTextEditTick := 0;
   FScrollSettleDelay := 400;
   FWinSupportedLanguages := nil;
+  FWinSpellAvailable := TOS.IsWindows8OrLater;
 
   // Default integration settings
   FPopupMenu := nil;
@@ -1323,6 +1325,12 @@ var
   TotalChars: integer;
 begin
   if FContextMenuOpen then
+    Exit;
+
+  // Windows Spell Checker API is unavailable on Windows 7 and earlier.
+  // Skip the check so no background thread is spawned only to fail
+  // inside CoCreateInstance on every text change.
+  if (FEngine = seWindows) and not FWinSpellAvailable then
     Exit;
 
   // Never start a Hunspell check while the dictionary is unloaded or being reloaded
