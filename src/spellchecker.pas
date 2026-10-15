@@ -729,8 +729,14 @@ begin
   if FLanguage = AValue then Exit;
   FLanguage := AValue;
   // In the designer the user expects an immediate reaction, so arm the
-  // dictionary source as soon as the language is set there.
+  // dictionary source as soon as the language is set there. At runtime
+  // a language is only useful when a dictionary source exists, and the
+  // default DicUrl already counts as one, so runtime assignment also
+  // arms the load. This allows Hunspell without DicPath, when the
+  // dictionary is kept in memory only.
   if csDesigning in ComponentState then
+    FDictionaryConfigured := True
+  else if (not (csLoading in ComponentState)) and (FLanguage <> '') and (FDicUrl <> '') then
     FDictionaryConfigured := True;
   // When the language is cleared, unload any Hunspell dictionary that was
   // loaded for the previous language. Otherwise the old dictionary stays in
@@ -1425,6 +1431,13 @@ begin
 
   if not FEnabled or not Assigned(FRichMemo) or not Assigned(FSpellChecker) then
     Exit;
+
+  // No language means nothing to check against, for any engine
+  if FLanguage = '' then
+  begin
+    ClearErrors;
+    Exit;
+  end;
 
   // For Hunspell engine, dictionary must be loaded
   if (FEngine = seHunspell) and ((FHunSpellChecker = nil) or (not FHunDictionaryLoaded)) then
