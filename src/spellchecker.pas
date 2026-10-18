@@ -34,8 +34,8 @@ uses
   OneShotThread,
   OneShotTimer,
   Downloader,
-  stringhelper,
-  osutils;
+  StringHelper,
+  OSUtils;
 
 type
   // Event fired after spell check results have been applied to the RichMemo
