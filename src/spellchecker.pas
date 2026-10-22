@@ -128,6 +128,7 @@ type
     FDebounceTimer: TTimer;
     FPrevContextPopup: TContextPopupEvent; // saved original RichMemo.OnContextPopup
     FPrevOnChange: TNotifyEvent;           // saved original RichMemo.OnChange
+    FLastTextByteLen: integer;             // byte length of memo text at last change, detects insertion
     FContextMenuOpen: boolean;             // True while context menu is visible
     FReplaceJustDone: boolean;             // True after replacement to avoid duplicate check
     FWinSupportedLanguages: TStringList; // cached TStrings view for the SupportedLanguages property
@@ -422,6 +423,7 @@ begin
   FPrevOnChange := nil;
   FContextMenuOpen := False;
   FReplaceJustDone := False;
+  FLastTextByteLen := 0;
   FEngine := seWindows;
   FHunSpellChecker := nil;
   FHunDictionaryLoaded := False;
@@ -627,6 +629,11 @@ begin
 
   if FEnabled and Assigned(FRichMemo) then
     CheckNow;
+
+  // Sync the tracked text length so the first user edit is measured from
+  // the final text state rather than from the empty initial snapshot
+  if Assigned(FRichMemo) then
+    FLastTextByteLen := Length(FRichMemo.Text);
 end;
 
 procedure TSpellChecker.SetRichMemo(AValue: TRichMemo);
@@ -666,6 +673,13 @@ begin
   end;
 
   FRichMemo := AValue;
+
+  // Sync the tracked text length so the next OnChange does not mistake a
+  // benign event for an insertion
+  if Assigned(FRichMemo) then
+    FLastTextByteLen := Length(FRichMemo.Text)
+  else
+    FLastTextByteLen := 0;
 
   if Assigned(FRichMemo) then
   begin
@@ -1160,16 +1174,32 @@ begin
 end;
 
 procedure TSpellChecker.OnRichMemoChange(Sender: TObject);
+var
+  TextSnapshot: string = '';
+  NewByteLen: integer = 0;
 begin
-  // If the change was caused by our own internal operation
-  // (e.g. applying spell-check underlines), do not notify the user.
-  if FInternalChange then Exit;
-
   // The memo may already be nil or in the middle of destruction when
   // its destructor fires OnChange. Exit early so we never dereference
   // a half destroyed control.
   if not Assigned(FRichMemo) then Exit;
   if csDestroying in FRichMemo.ComponentState then Exit;
+
+  // Read the text snapshot once per change: it is needed both for the
+  // insertion check below and for the EqualNormalized comparison further on
+  TextSnapshot := FRichMemo.Text;
+  NewByteLen := Length(TextSnapshot);
+
+  // Detect insertion. RichMemo inherits the formatting of the preceding
+  // character, so typing right after an underlined word extends the
+  // underline to the new character until the next check runs. Clear it
+  // from the character just before the caret in this case.
+  if not FInternalChange and (NewByteLen > FLastTextByteLen) and Assigned(FSpellChecker) and (FRichMemo.SelStart > 0) then
+    FSpellChecker.ClearUnderlineRange(FRichMemo.SelStart - 1, 1);
+  FLastTextByteLen := NewByteLen;
+
+  // If the change was caused by our own internal operation
+  // (e.g. applying spell-check underlines), do not notify the user.
+  if FInternalChange then Exit;
 
   // A RichMemo can fire OnChange for reasons other than a user text edit
   // (first paint, focus change, formatting, line ending normalization).
@@ -1178,7 +1208,7 @@ begin
   // first check; in that case the change is treated as real and the
   // usual guard in OnBackgroundDone will still discard a stale result
   // if the text moved on afterwards.
-  if (FCheckText <> '') and FRichMemo.Text.EqualNormalized(FCheckText) then
+  if (FCheckText <> '') and TextSnapshot.EqualNormalized(FCheckText) then
   begin
     if Assigned(FPrevOnChange) then
       FPrevOnChange(Sender);
