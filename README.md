@@ -251,6 +251,24 @@ required by its terms:
 
 The components will appear on the **Common Controls** tab of the component palette.
 
+## Licensing
+
+DesignKit as a whole is distributed under the **MIT License** - see
+[LICENSE](LICENSE).
+
+The module `src/calendarlite.pas` and the resource
+`src/calendarlite_icon.res` are third-party code from the Lazarus CCR
+`TCalendarLite` component and are distributed under the **Modified LGPL
+(with linking exception)**, the same license as the Lazarus LCL:
+
+- Linking exception: [LICENSE.CalendarLite.txt](LICENSE.CalendarLite.txt)
+- Full LGPL v2 text: [COPYING.LGPL.txt](COPYING.LGPL.txt)
+- Original authors' notice: [README.CalendarLite.txt](README.CalendarLite.txt)
+
+The linking exception permits using these files together with
+MIT-licensed code without affecting the licensing of the rest of
+DesignKit.
+
 ---
 
 *DesignKit Package © 2026 by Alexander Tverskoy*  
