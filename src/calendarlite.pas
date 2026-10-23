@@ -111,41 +111,39 @@ type
   TCalEventClickEvent = procedure(Sender: TObject; AEvent: TCalEventItem; ADate: TDate) of object;
 
   { A single user event: a date, a caption and a color }
-  TCalEventItem = class(TPersistent)
+  TCalEventItem = class(TCollectionItem)
   private
     FColor: TColor;
     FDate: TDate;
     FName: string;
-    FOwner: TCalEventList;
     procedure SetColor(AValue: TColor);
-    procedure SetDate(AValue: TDate);
+    procedure SetDate(AValue: TDateTime);
     procedure SetName(const AValue: string);
+  protected
+    function GetDisplayName: string; override;
   public
-    constructor Create(AOwner: TCalEventList; ADate: TDate; const AName: string; AColor: TColor);
+    constructor Create(ACollection: TCollection); override;
   published
     property Color: TColor read FColor write SetColor default clSkyBlue;
-    property Date: TDate read FDate write SetDate;
+    property Date: TDateTime read FDate write SetDate;
     property Name: string read FName write SetName;
   end;
 
   { Container for user events }
-  TCalEventList = class
+  TCalEventList = class(TOwnedCollection)
   private
-    FItems: TFPList;
     FOwner: TCalendarLite;
-    function GetCount: integer;
-    function GetItem(AIndex: integer): TCalEventItem;
+    function GetEventItem(AIndex: integer): TCalEventItem;
+    procedure SetEventItem(AIndex: integer; AValue: TCalEventItem);
+  protected
+    procedure Notify(Item: TCollectionItem; Action: TCollectionNotification); override;
   public
     constructor Create(AOwner: TCalendarLite);
-    destructor Destroy; override;
+    function Add(ADate: TDate; const AName: string; AColor: TColor = clSkyBlue): TCalEventItem; overload;
     procedure Changed;
-    procedure Clear;
-    function Add(ADate: TDate; const AName: string; AColor: TColor = clSkyBlue): TCalEventItem;
-    procedure Delete(AIndex: integer);
     procedure DeleteForDate(ADate: TDate);
     function EventsOn(ADate: TDate): TCalEventArray;
-    property Count: integer read GetCount;
-    property Items[AIndex: integer]: TCalEventItem read GetItem; default;
+    property Items[AIndex: integer]: TCalEventItem read GetEventItem write SetEventItem; default;
   end;
 
   { TCalDateList }
@@ -312,6 +310,10 @@ type
     FFormatSettings: TFormatSettings;
     FButtonHeight: integer;
     FButtonWidth: integer;
+    FEventSquareSize: integer;
+    FEventSquareGap: integer;
+    FEventSquareBottom: integer;
+    FEventTextGap: integer;
     function GetDayNames: string;
     function GetDisplayText(aTextIndex: TDisplayText): string;
     function GetDisplayTexts: string;
@@ -331,6 +333,8 @@ type
     procedure SetDefaultDisplayTexts;
     procedure SetDefaultMonthNames;
     procedure SetDisplayTexts(AValue: string);
+    procedure SetEventSquareSize(const AValue: integer);
+    procedure SetEventSquareBottom(const AValue: integer);
     procedure SetLanguage(AValue: TLanguage);
     procedure SetMultiSelect(AValue: boolean);
     procedure SetOptions(AValue: TCalOptions);
@@ -443,7 +447,7 @@ type
     property Date: TDateTime read FDate write SetDate;
     property DayNames: string read FCustomDayNames write SetCustomDayNames;
     property DisplayTexts: string read GetDisplayTexts write SetCustomDisplayTexts;
-    property Events: TCalEventList read FEvents;
+    property Events: TCalEventList read FEvents write FEvents;
     property MonthNames: string read FCustomMonthNames write SetCustomMonthNames;
     property MultiSelect: boolean read FMultiSelect write SetMultiSelect default False;
     property Options: TCalOptions read FOptions write SetOptions default [coShowTodayFrame, coBoldHolidays,
@@ -451,6 +455,10 @@ type
     property StartingDayOfWeek: TDayOfWeek read FStartingDayOfWeek write SetStartingDayOfWeek default dowSunday;
     property WeekendDays: TDaysOfWeek read FWeekendDays write SetWeekendDays default [dowSunday];
     property Languages: TLanguage read FLanguage write SetLanguage default lgEnglish;
+
+    // event square dimensions and spacing
+    property EventSquareSize: integer read FEventSquareSize write SetEventSquareSize default 6;
+    property EventSquareBottom: integer read FEventSquareBottom write SetEventSquareBottom default 5;
 
     // new event properties
     property OnDateChange: TNotifyEvent read FOnDateChange write FOnDateChange;
@@ -523,12 +531,6 @@ const
     SystemFont: False; RightToLeft: False;
     EndEllipsis: False
     );
-
-  // Event square size used in day cells
-  EventSquareSize = 6;   // Size of the square itself
-  EventSquareGap = 2;    // Horizontal space between squares
-  EventSquareBottom = 5; // Distance from the bottom edge of the cell
-  EventTextGap = 2;      // Vertical gap between the day number and the squares
 
   // IMPORTANT NOTE: NO SPACES IN FRONT OF QUOTES !!!
 
@@ -614,61 +616,77 @@ end;
 
 { TCalEventItem }
 
-constructor TCalEventItem.Create(AOwner: TCalEventList; ADate: TDate; const AName: string; AColor: TColor);
+constructor TCalEventItem.Create(ACollection: TCollection);
 begin
-  inherited Create;
-  FOwner := AOwner;
-  FDate := Trunc(ADate);
-  FName := AName;
-  FColor := AColor;
+  inherited Create(ACollection);
+  FColor := clSkyBlue;
+  FDate := SysUtils.Date;
+  FName := '';
 end;
 
 procedure TCalEventItem.SetColor(AValue: TColor);
 begin
   if FColor = AValue then exit;
   FColor := AValue;
-  if Assigned(FOwner) then
-    FOwner.Changed;
+  if Collection is TCalEventList then
+    TCalEventList(Collection).Changed;
 end;
 
-procedure TCalEventItem.SetDate(AValue: TDate);
+procedure TCalEventItem.SetDate(AValue: TDateTime);
 begin
   AValue := Trunc(AValue);
   if FDate = AValue then exit;
   FDate := AValue;
-  if Assigned(FOwner) then
-    FOwner.Changed;
+  if Collection is TCalEventList then
+    TCalEventList(Collection).Changed;
 end;
 
 procedure TCalEventItem.SetName(const AValue: string);
 begin
   if FName = AValue then exit;
   FName := AValue;
-  if Assigned(FOwner) then
-    FOwner.Changed;
+  if Collection is TCalEventList then
+    TCalEventList(Collection).Changed;
+end;
+
+function TCalEventItem.GetDisplayName: string;
+begin
+  Result := FormatDateTime('yyyy-mm-dd', FDate);
+  if FName <> '' then
+    Result := Result + ' ' + FName;
 end;
 
 { TCalEventList }
 
 constructor TCalEventList.Create(AOwner: TCalendarLite);
 begin
-  inherited Create;
+  inherited Create(AOwner, TCalEventItem);
   FOwner := AOwner;
-  FItems := TFPList.Create;
 end;
 
-destructor TCalEventList.Destroy;
+function TCalEventList.GetEventItem(AIndex: integer): TCalEventItem;
 begin
-  Clear;
-  FreeAndNil(FItems);
+  Result := TCalEventItem(inherited GetItem(AIndex));
+end;
+
+procedure TCalEventList.SetEventItem(AIndex: integer; AValue: TCalEventItem);
+begin
+  inherited SetItem(AIndex, AValue);
+end;
+
+procedure TCalEventList.Notify(Item: TCollectionItem; Action: TCollectionNotification);
+begin
   inherited;
+  if Assigned(FOwner) then
+    FOwner.Draw;
 end;
 
 function TCalEventList.Add(ADate: TDate; const AName: string; AColor: TColor): TCalEventItem;
 begin
-  Result := TCalEventItem.Create(Self, ADate, AName, AColor);
-  FItems.Add(Result);
-  Changed;
+  Result := TCalEventItem(inherited Add);
+  Result.Date := ADate;
+  Result.Name := AName;
+  Result.Color := AColor;
 end;
 
 procedure TCalEventList.Changed;
@@ -677,37 +695,14 @@ begin
     FOwner.Draw;
 end;
 
-procedure TCalEventList.Clear;
-var
-  i: integer;
-begin
-  for i := FItems.Count - 1 downto 0 do
-  begin
-    TCalEventItem(FItems[i]).Free;
-    FItems.Delete(i);
-  end;
-  Changed;
-end;
-
-procedure TCalEventList.Delete(AIndex: integer);
-begin
-  if (AIndex < 0) or (AIndex >= FItems.Count) then exit;
-  TCalEventItem(FItems[AIndex]).Free;
-  FItems.Delete(AIndex);
-  Changed;
-end;
-
 procedure TCalEventList.DeleteForDate(ADate: TDate);
 var
   i: integer;
 begin
   ADate := Trunc(ADate);
-  for i := FItems.Count - 1 downto 0 do
-    if TCalEventItem(FItems[i]).Date = ADate then
-    begin
-      TCalEventItem(FItems[i]).Free;
-      FItems.Delete(i);
-    end;
+  for i := Count - 1 downto 0 do
+    if Items[i].Date = ADate then
+      Delete(i);
   Changed;
 end;
 
@@ -720,9 +715,9 @@ begin
   Result := nil;
   ACount := 0;
   truncatedDate := Trunc(ADate);
-  for i := 0 to FItems.Count - 1 do
+  for i := 0 to Count - 1 do
   begin
-    ev := TCalEventItem(FItems[i]);
+    ev := Items[i];
     if ev.Date = truncatedDate then
     begin
       SetLength(Result, ACount + 1);
@@ -730,16 +725,6 @@ begin
       Inc(ACount);
     end;
   end;
-end;
-
-function TCalEventList.GetCount: integer;
-begin
-  Result := FItems.Count;
-end;
-
-function TCalEventList.GetItem(AIndex: integer): TCalEventItem;
-begin
-  Result := TCalEventItem(FItems[AIndex]);
 end;
 
 { TCalSortedDateList }
@@ -1224,7 +1209,7 @@ begin
         { Reserve the bottom strip for event squares }
         textRect := rec;
         if Length(dateEvents) > 0 then
-          Dec(textRect.Bottom, EventSquareSize + EventSquareBottom + EventTextGap);
+          Dec(textRect.Bottom, FOwner.EventSquareSize + FOwner.EventSquareBottom + FOwner.FEventTextGap);
 
         FCanvas.TextRect(textRect, 0, 0, s, FTextStyle);
 
@@ -1259,17 +1244,17 @@ begin
   Count := Length(AEvents);
   if Count = 0 then exit;
 
-  totalWidth := Count * EventSquareSize + (Count - 1) * EventSquareGap;
+  totalWidth := Count * FOwner.EventSquareSize + (Count - 1) * FOwner.FEventSquareGap;
   startX := ACellRect.Left + (ACellRect.Width - totalWidth) div 2;
-  sqY := ACellRect.Bottom - EventSquareSize - EventSquareBottom;
+  sqY := ACellRect.Bottom - FOwner.EventSquareSize - FOwner.EventSquareBottom;
 
   for i := 0 to Count - 1 do
   begin
     ev := AEvents[i];
-    sqRect.Left := startX + i * (EventSquareSize + EventSquareGap);
+    sqRect.Left := startX + i * (FOwner.EventSquareSize + FOwner.FEventSquareGap);
     sqRect.Top := sqY;
-    sqRect.Right := sqRect.Left + EventSquareSize;
-    sqRect.Bottom := sqRect.Top + EventSquareSize;
+    sqRect.Right := sqRect.Left + FOwner.EventSquareSize;
+    sqRect.Bottom := sqRect.Top + FOwner.EventSquareSize;
 
     { Highlight the event if the mouse is over it }
     if ev = FHoveredEvent then
@@ -1896,6 +1881,10 @@ begin
   FColors := TCalColors.Create(self);
   //Color := clWhite;
   FStartingDayOfWeek := dowSunday;
+  FEventSquareSize := 6;
+  FEventSquareGap := 2;
+  FEventSquareBottom := 5;
+  FEventTextGap := 2;
   with GetControlClassDefaultSize do
     SetInitialBounds(0, 0, cx, cy);
   {$ifdef lcl_scaling}
@@ -2738,6 +2727,20 @@ begin
   finally
     L.Free;
   end;
+  Draw;
+end;
+
+procedure TCalendarLite.SetEventSquareSize(const AValue: integer);
+begin
+  if FEventSquareSize = AValue then exit;
+  FEventSquareSize := AValue;
+  Draw;
+end;
+
+procedure TCalendarLite.SetEventSquareBottom(const AValue: integer);
+begin
+  if FEventSquareBottom = AValue then exit;
+  FEventSquareBottom := AValue;
   Draw;
 end;
 
