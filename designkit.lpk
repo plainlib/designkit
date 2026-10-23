@@ -58,7 +58,6 @@ SOFTWARE."/>
       </Item>
       <Item>
         <Filename Value="src\calendarlite.pas"/>
-        <HasRegisterProc Value="True"/>
         <UnitName Value="CalendarLite"/>
       </Item>
       <Item>

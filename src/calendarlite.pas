@@ -32,6 +32,10 @@
   You should have received a copy of the GNU Library General Public License
   along with this library; if not, write to the Free Software Foundation,
   Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+
+  Modified by Alexander Tverskoy (plaintool), 2026.
+  All changes are tracked in the project git history:
+  https://github.com/plainlib/designkit
 }
 
 unit CalendarLite;
@@ -124,7 +128,6 @@ type
     property Values[AIndex: Integer]: TDate read GetDate write SetDate; default;
   end;
 
-
   { TCalDrawer }
 
   TCalDrawer = class
@@ -171,7 +174,6 @@ type
     property Buffer: TBitmap read FBuffer;
   end;
 
-
   { TCalColors }
 
   TCalColors = class(TPersistent)
@@ -197,7 +199,6 @@ type
     property TopRowTextColor: TColor index 11 read GetColor write SetColor default clHighlightText;
     property WeekendColor: TColor index 12 read GetColor write SetColor default clRed;
   end;
-
 
   { TCalendarLite }
 
@@ -387,9 +388,6 @@ procedure ClearHolidays(var AHolidays: THolidays);
 procedure AddHoliday(ADay: Integer; var AHolidays: THolidays);
 function  IsHoliday(ADay: Integer; AHolidays: THolidays): Boolean;
 
-procedure Register;
-
-
 implementation
 
 {$R calendarlite_icon.res}
@@ -433,7 +431,7 @@ const
   FirstDateRow = 2;
   LastDateRow = 7;
   TodayRow = 8;
-  DefCalHeight = 160;
+  DefCalHeight = 190;
   DefCalWidth = 210;
   DefMinHeight = 120;
   DefMinWidth = 120;
@@ -528,7 +526,6 @@ function IsHoliday(ADay: Integer; AHolidays: THolidays): Boolean;
 begin
   Result := (AHolidays and DWord(1 shl ADay)) <> 0;
 end;
-
 
 { TCalSortedDateList }
 
@@ -683,7 +680,6 @@ procedure TCalDateList.Sort;
 begin
   FList.Sort(@CompareDates);
 end;
-
 
 { TCalDrawer }
 
@@ -1405,7 +1401,6 @@ begin
   Draw;
 end;
 
-
 { TCalColors }
 
 constructor TCalColors.Create(AOwner: TCalendarLite);
@@ -1438,7 +1433,6 @@ begin
   FColors[AIndex] := AValue;
   FOwner.Draw;
 end;
-
 
 { TCalendarLite }
 
@@ -1803,7 +1797,6 @@ begin
     FPrevMouseDate := dt;
   end;
 end;
-
 
 procedure TCalendarLite.MonthMenuItemClicked(Sender: TObject);
 begin
@@ -2319,12 +2312,5 @@ begin
   Hint := FSavedHint;
   Application.CancelHint;
 end;
-
-
-procedure Register;
-begin
-  RegisterComponents('Misc', [TCalendarLite]);
-end;
-
 
 end.

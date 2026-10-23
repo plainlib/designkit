@@ -14,7 +14,6 @@ implementation
 
 procedure Register;
 begin
-  RegisterUnit('CalendarLite', @CalendarLite.Register);
   RegisterUnit('DesignKitRegister', @DesignKitRegister.Register);
 end;
 
