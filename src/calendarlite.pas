@@ -90,7 +90,8 @@ type
   TCalOption = (coBoldDayNames, coBoldHolidays, coBoldToday, coBoldTopRow,
     coBoldWeekend, coDayLine, coShowBorder, coShowHolidays,
     coShowTodayFrame, coShowTodayName, coShowTodayRow,
-    coShowWeekend, coShowDayNames, coShowTopRow, coUseTopRowColors
+    coShowWeekend, coShowDayNames, coShowTopRow, coUseTopRowColors,
+    coShowRange  // show selected range in the today row
     );
   TCalOptions = set of TCalOption;
 
@@ -102,6 +103,50 @@ type
   TLanguage = (lgEnglish, lgFrench, lgGerman, lgHebrew, lgSpanish, lgItalian,
     lgPolish, lgFinnish, lgGreek, lgRussian, lgCustom);
 
+  TCalEventItem = class;
+  TCalEventArray = array of TCalEventItem;
+
+  TCalEventList = class;
+
+  TCalEventClickEvent = procedure(Sender: TObject; AEvent: TCalEventItem; ADate: TDate) of object;
+
+  { A single user event: a date, a caption and a color }
+  TCalEventItem = class(TPersistent)
+  private
+    FColor: TColor;
+    FDate: TDate;
+    FName: string;
+    FOwner: TCalEventList;
+    procedure SetColor(AValue: TColor);
+    procedure SetDate(AValue: TDate);
+    procedure SetName(const AValue: string);
+  public
+    constructor Create(AOwner: TCalEventList; ADate: TDate; const AName: string; AColor: TColor);
+  published
+    property Color: TColor read FColor write SetColor default clSkyBlue;
+    property Date: TDate read FDate write SetDate;
+    property Name: string read FName write SetName;
+  end;
+
+  { Container for user events }
+  TCalEventList = class
+  private
+    FItems: TFPList;
+    FOwner: TCalendarLite;
+    function GetCount: integer;
+    function GetItem(AIndex: integer): TCalEventItem;
+  public
+    constructor Create(AOwner: TCalendarLite);
+    destructor Destroy; override;
+    procedure Changed;
+    procedure Clear;
+    function Add(ADate: TDate; const AName: string; AColor: TColor = clSkyBlue): TCalEventItem;
+    procedure Delete(AIndex: integer);
+    procedure DeleteForDate(ADate: TDate);
+    function EventsOn(ADate: TDate): TCalEventArray;
+    property Count: integer read GetCount;
+    property Items[AIndex: integer]: TCalEventItem read GetItem; default;
+  end;
 
   { TCalDateList }
 
@@ -126,6 +171,13 @@ type
     property Values[AIndex: integer]: TDate read GetDate write SetDate; default;
   end;
 
+  TEventRectItem = record
+    Event: TCalEventItem;
+    Date: TDate;
+    Rect: TRect;
+  end;
+  TEventRectArray = array of TEventRectItem;
+
   { TCalDrawer }
 
   TCalDrawer = class
@@ -135,7 +187,9 @@ type
     FCanvas: TCanvas;
     FCellSize: TSize;
     FColPositions: TColArray;
+    FEventRects: TEventRectArray;
     FOwner: TCalendarLite;
+    FRangeRect: TRect;
     FRowPositions: TRowArray;
     FLastRow: integer;
     FStartDate: TDateTime;
@@ -143,17 +197,24 @@ type
     FThisMonth: word;
     FThisYear: word;
     FTextStyle: TTextStyle;
+    FTodayRect: TRect;
+    FHoveredEvent: TCalEventItem;
     procedure CalcSettings;
+    procedure SetHoveredEvent(AValue: TCalEventItem);
     procedure DrawArrow(ARect: TRect; AHead: TArrowhead; ADirec: TArrowDirection);
     procedure DrawBackground;
     procedure DrawDayCells;
     procedure DrawDayLabels;
+    procedure DrawEventsInCell(ACellRect: TRect; ADate: TDate; const AEvents: TCalEventArray);
     procedure DrawTodayRow;
+    procedure DrawTodayRange(ACellRect: TRect; AStartDate, AEndDate: TDate);
     procedure DrawTopRow;
     function GetCellAt(aPoint: TPoint): TSize;
     function GetCellAtColRow(aCol, aRow: integer): TRect;
     function GetColRowPosition(aCol, aRow: integer): TSize;
     function GetDateOfCell(ACell: TSize): TDate;
+    function GetEventAt(APoint: TPoint): TCalEventItem;
+    function GetEventDateAt(APoint: TPoint): TDate;
     function GetLeftColIndex: integer;
     procedure GetMonthYearRects(var AMonthRect, AYearRect: TRect);
     function GetRightColIndex: integer;
@@ -171,6 +232,9 @@ type
     function GetRowRect(ARow: integer): TRect;
     property BoundsRect: TRect read FBoundsRect write SetBoundsRect;
     property Buffer: TBitmap read FBuffer;
+    property RangeRect: TRect read FRangeRect;
+    property TodayRect: TRect read FTodayRect;
+    property HoveredEvent: TCalEventItem read FHoveredEvent write SetHoveredEvent;
   end;
 
   { TCalColors }
@@ -178,7 +242,7 @@ type
   TCalColors = class(TPersistent)
   private
     FOwner: TCalendarLite;
-    FColors: array[0..12] of TColor;
+    FColors: array[0..13] of TColor;
     function GetColor(AIndex: integer): TColor;
     procedure SetColor(AIndex: integer; AValue: TColor);
   public
@@ -197,6 +261,7 @@ type
     property TopRowColor: TColor index 10 read GetColor write SetColor default clHighlight;
     property TopRowTextColor: TColor index 11 read GetColor write SetColor default clHighlightText;
     property WeekendColor: TColor index 12 read GetColor write SetColor default clRed;
+    property EventFocusColor: TColor index 13 read GetColor write SetColor default clAqua;
   end;
 
   { TCalendarLite }
@@ -211,7 +276,9 @@ type
     FCustomDisplayTexts: string;
     FCustomMonthNames: string;
     FDisplayTexts: array[TDisplayText] of string;
+    FEvents: TCalEventList;
     FOnDateChange: TNotifyEvent;
+    FOnEventClick: TCalEventClickEvent;
     FOnMonthChange: TNotifyEvent;
     FOnGetDayText: TCalGetDayTextEvent;
     FOnDrawCell: TCalDrawCellEvent;
@@ -222,6 +289,7 @@ type
     FPopupMenu: TPopupMenu;
     FStartingDayOfWeek: TDayOfWeek;
     FWeekendDays: TDaysOfWeek;
+    FPrevEvent: TCalEventItem;
     FPrevMouseDate: TDate;
     FPrevDate: TDate;
     FPrevSingleAnchor: TDate;
@@ -307,6 +375,7 @@ type
 
     { Hints }
     procedure ShowHintWindow(APoint: TPoint; ADate: TDate);
+    procedure ShowEventHintWindow(APoint: TPoint; AEvent: TCalEventItem);
     procedure HideHintWindow;
   public
     constructor Create(anOwner: TComponent); override;
@@ -319,6 +388,7 @@ type
     procedure ClearSelectedDates;
     procedure Draw;  // Use instead of Invalidate to recreate the buffer
     function IsSelected(ADate: TDate): boolean;
+    function SelectionRange(out AStart, AEnd: TDate): boolean;
     function SelectedDates: TCalDateArray;
 
   published
@@ -373,6 +443,7 @@ type
     property Date: TDateTime read FDate write SetDate;
     property DayNames: string read FCustomDayNames write SetCustomDayNames;
     property DisplayTexts: string read GetDisplayTexts write SetCustomDisplayTexts;
+    property Events: TCalEventList read FEvents;
     property MonthNames: string read FCustomMonthNames write SetCustomMonthNames;
     property MultiSelect: boolean read FMultiSelect write SetMultiSelect default False;
     property Options: TCalOptions read FOptions write SetOptions default [coShowTodayFrame, coBoldHolidays,
@@ -384,6 +455,7 @@ type
     // new event properties
     property OnDateChange: TNotifyEvent read FOnDateChange write FOnDateChange;
     property OnDrawCell: TCalDrawCellEvent read FOnDrawCell write FOnDrawCell;
+    property OnEventClick: TCalEventClickEvent read FOnEventClick write FOnEventClick;
     property OnGetDayText: TCalGetDayTextEvent read FOnGetDayText write FOnGetDayText;
     property OnGetHolidays: TGetHolidaysEvent read FOnGetHolidays write FOnGetHolidays;
     property OnHint: TCalGetDayTextEvent read FOnHint write FOnHint;
@@ -451,6 +523,12 @@ const
     SystemFont: False; RightToLeft: False;
     EndEllipsis: False
     );
+
+  // Event square size used in day cells
+  EventSquareSize = 6;   // Size of the square itself
+  EventSquareGap = 2;    // Horizontal space between squares
+  EventSquareBottom = 5; // Distance from the bottom edge of the cell
+  EventTextGap = 2;      // Vertical gap between the day number and the squares
 
   // IMPORTANT NOTE: NO SPACES IN FRONT OF QUOTES !!!
 
@@ -532,6 +610,136 @@ end;
 function IsHoliday(ADay: integer; AHolidays: THolidays): boolean;
 begin
   Result := (AHolidays and DWord(1 shl ADay)) <> 0;
+end;
+
+{ TCalEventItem }
+
+constructor TCalEventItem.Create(AOwner: TCalEventList; ADate: TDate; const AName: string; AColor: TColor);
+begin
+  inherited Create;
+  FOwner := AOwner;
+  FDate := Trunc(ADate);
+  FName := AName;
+  FColor := AColor;
+end;
+
+procedure TCalEventItem.SetColor(AValue: TColor);
+begin
+  if FColor = AValue then exit;
+  FColor := AValue;
+  if Assigned(FOwner) then
+    FOwner.Changed;
+end;
+
+procedure TCalEventItem.SetDate(AValue: TDate);
+begin
+  AValue := Trunc(AValue);
+  if FDate = AValue then exit;
+  FDate := AValue;
+  if Assigned(FOwner) then
+    FOwner.Changed;
+end;
+
+procedure TCalEventItem.SetName(const AValue: string);
+begin
+  if FName = AValue then exit;
+  FName := AValue;
+  if Assigned(FOwner) then
+    FOwner.Changed;
+end;
+
+{ TCalEventList }
+
+constructor TCalEventList.Create(AOwner: TCalendarLite);
+begin
+  inherited Create;
+  FOwner := AOwner;
+  FItems := TFPList.Create;
+end;
+
+destructor TCalEventList.Destroy;
+begin
+  Clear;
+  FreeAndNil(FItems);
+  inherited;
+end;
+
+function TCalEventList.Add(ADate: TDate; const AName: string; AColor: TColor): TCalEventItem;
+begin
+  Result := TCalEventItem.Create(Self, ADate, AName, AColor);
+  FItems.Add(Result);
+  Changed;
+end;
+
+procedure TCalEventList.Changed;
+begin
+  if Assigned(FOwner) then
+    FOwner.Draw;
+end;
+
+procedure TCalEventList.Clear;
+var
+  i: integer;
+begin
+  for i := FItems.Count - 1 downto 0 do
+  begin
+    TCalEventItem(FItems[i]).Free;
+    FItems.Delete(i);
+  end;
+  Changed;
+end;
+
+procedure TCalEventList.Delete(AIndex: integer);
+begin
+  if (AIndex < 0) or (AIndex >= FItems.Count) then exit;
+  TCalEventItem(FItems[AIndex]).Free;
+  FItems.Delete(AIndex);
+  Changed;
+end;
+
+procedure TCalEventList.DeleteForDate(ADate: TDate);
+var
+  i: integer;
+begin
+  ADate := Trunc(ADate);
+  for i := FItems.Count - 1 downto 0 do
+    if TCalEventItem(FItems[i]).Date = ADate then
+    begin
+      TCalEventItem(FItems[i]).Free;
+      FItems.Delete(i);
+    end;
+  Changed;
+end;
+
+function TCalEventList.EventsOn(ADate: TDate): TCalEventArray;
+var
+  i, ACount: integer;
+  ev: TCalEventItem;
+  truncatedDate: TDate;
+begin
+  Result := nil;
+  ACount := 0;
+  truncatedDate := Trunc(ADate);
+  for i := 0 to FItems.Count - 1 do
+  begin
+    ev := TCalEventItem(FItems[i]);
+    if ev.Date = truncatedDate then
+    begin
+      SetLength(Result, ACount + 1);
+      Result[ACount] := ev;
+      Inc(ACount);
+    end;
+  end;
+end;
+
+function TCalEventList.GetCount: integer;
+begin
+  Result := FItems.Count;
+end;
+
+function TCalEventList.GetItem(AIndex: integer): TCalEventItem;
+begin
+  Result := TCalEventItem(FItems[AIndex]);
 end;
 
 { TCalSortedDateList }
@@ -707,6 +915,7 @@ end;
 
 destructor TCalDrawer.Destroy;
 begin
+  SetLength(FEventRects, 0);
   FBuffer.Free;
   inherited;
 end;
@@ -783,6 +992,7 @@ procedure TCalDrawer.Draw;
 begin
   if not Assigned(FCanvas) then Exit;
   DecodeDate(FOwner.FDate, FThisYear, FThisMonth, FThisDay);
+  SetLength(FEventRects, 0);
   CalcSettings;
   FCanvas.Font.Assign(FOwner.Font);
   DrawBackground;
@@ -882,7 +1092,7 @@ var
   startRow: integer = 0;
   holidays: THolidays = 0;
   r, c, startCol, startSpan: integer;
-  rec: TRect;
+  rec, textRect: TRect;
   s: string;
   dow, y, m, d: word;
   partWeeks: integer;
@@ -891,6 +1101,7 @@ var
   oldPen: TPen;
   state: TCalCellStates;
   continueDrawing: boolean;
+  dateEvents: TCalEventArray = nil;
 begin
   todayDate := Date;
   dow := DayOfWeek(FOwner.FDate) - 1;  // DayOfWeek is 1-based, dow is 0-based !
@@ -1004,7 +1215,22 @@ begin
         s := IntToStr(d);
         if Assigned(FOwner.FOnGetDayText) then
           FOwner.FOnGetDayText(FOwner, y, m, d, s);
-        FCanvas.TextRect(rec, 0, 0, s, FTextStyle);
+
+        { Prepare event info for this cell }
+        dateEvents := nil;
+        if FOwner.FEvents.Count > 0 then
+          dateEvents := FOwner.FEvents.EventsOn(dt);
+
+        { Reserve the bottom strip for event squares }
+        textRect := rec;
+        if Length(dateEvents) > 0 then
+          Dec(textRect.Bottom, EventSquareSize + EventSquareBottom + EventTextGap);
+
+        FCanvas.TextRect(textRect, 0, 0, s, FTextStyle);
+
+        { Paint event squares }
+        if Length(dateEvents) > 0 then
+          DrawEventsInCell(rec, dt, dateEvents);
       end;
 
       dt := dt + 1;
@@ -1013,6 +1239,87 @@ begin
   oldPen.Free;
   oldBrush.Free;
 
+end;
+
+procedure TCalDrawer.SetHoveredEvent(AValue: TCalEventItem);
+begin
+  if FHoveredEvent = AValue then exit;
+  FHoveredEvent := AValue;
+  FOwner.Draw; // Force redraw to update hover state
+end;
+
+{ Draw small colored squares under the day number }
+procedure TCalDrawer.DrawEventsInCell(ACellRect: TRect; ADate: TDate; const AEvents: TCalEventArray);
+var
+  i, Count, totalWidth, startX, sqY: integer;
+  ev: TCalEventItem;
+  sqRect: TRect;
+  evRect: TEventRectItem;
+begin
+  Count := Length(AEvents);
+  if Count = 0 then exit;
+
+  totalWidth := Count * EventSquareSize + (Count - 1) * EventSquareGap;
+  startX := ACellRect.Left + (ACellRect.Width - totalWidth) div 2;
+  sqY := ACellRect.Bottom - EventSquareSize - EventSquareBottom;
+
+  for i := 0 to Count - 1 do
+  begin
+    ev := AEvents[i];
+    sqRect.Left := startX + i * (EventSquareSize + EventSquareGap);
+    sqRect.Top := sqY;
+    sqRect.Right := sqRect.Left + EventSquareSize;
+    sqRect.Bottom := sqRect.Top + EventSquareSize;
+
+    { Highlight the event if the mouse is over it }
+    if ev = FHoveredEvent then
+    begin
+      { Apply focus color only if it is defined (not clNone) }
+      if (FOwner.Colors.EventFocusColor <> clNone) and (FOwner.Colors.EventFocusColor <> clDefault) then
+        FCanvas.Brush.Color := FOwner.Colors.EventFocusColor
+      else
+        FCanvas.Brush.Color := ev.Color;
+
+      InflateRect(sqRect, 1, 1); // Make it 1 pixel larger on each side
+    end
+    else
+      FCanvas.Brush.Color := ev.Color;
+
+    FCanvas.Brush.Style := bsSolid;
+    FCanvas.Pen.Color := clBlack;
+    FCanvas.Pen.Style := psSolid;
+    FCanvas.Pen.Width := 1;
+    FCanvas.Rectangle(sqRect);
+
+    { Remember the rect for hit testing }
+    SetLength(FEventRects, Length(FEventRects) + 1);
+    evRect.Event := ev;
+    evRect.Date := ADate;
+    evRect.Rect := sqRect; // Store inflated rect to prevent flickering
+    FEventRects[High(FEventRects)] := evRect;
+  end;
+end;
+
+{ Return the event at the given point, or nil }
+function TCalDrawer.GetEventAt(APoint: TPoint): TCalEventItem;
+var
+  i: integer;
+begin
+  Result := nil;
+  for i := 0 to High(FEventRects) do
+    if PtInRect(FEventRects[i].Rect, APoint) then
+      Exit(FEventRects[i].Event);
+end;
+
+{ Return the calendar date at the given event square, or 0 }
+function TCalDrawer.GetEventDateAt(APoint: TPoint): TDate;
+var
+  i: integer;
+begin
+  Result := 0;
+  for i := 0 to High(FEventRects) do
+    if PtInRect(FEventRects[i].Rect, APoint) then
+      Exit(FEventRects[i].Date);
 end;
 
 procedure TCalDrawer.DrawDayLabels;
@@ -1053,23 +1360,27 @@ end;
 
 procedure TCalDrawer.DrawTodayRow;
 var
-  r1, r2: TRect;
-  w1, w2, w3, rem, halfRem: integer;
-  s: string;
-  ds: string;
+  r1, iconRect, todayTextRect: TRect;
+  w1, w2, w3, w4, rem, halfRem, totalWidth: integer;
+  s, ds, startText, endText: string;
+  startDate, endDate: TDate;
+  hasRange: boolean;
 begin
+  FTodayRect := Rect(0, 0, 0, 0);
+  FRangeRect := Rect(0, 0, 0, 0);
+
   if (FLastRow <> TodayRow) then
     exit;
 
   r1 := GetCellAtColRow(2, TodayRow);
   if coUseTopRowColors in FOwner.Options then
   begin
-    if (FCanvas.Font.Color <> FOwner.Colors.TopRowTextColor) then FCanvas.Font.Color := FOwner.Colors.TopRowTextColor;
+    if (FCanvas.Font.Color <> FOwner.Colors.TopRowTextColor) then
+      FCanvas.Font.Color := FOwner.Colors.TopRowTextColor;
     FCanvas.Brush.Color := FOwner.Colors.TopRowColor;
     FCanvas.FillRect(r1);
   end
-  else
-  if (FCanvas.Font.Color <> FOwner.Colors.TextColor) then
+  else if (FCanvas.Font.Color <> FOwner.Colors.TextColor) then
     FCanvas.Font.Color := FOwner.Colors.TextColor;
 
   if coBoldToday in FOwner.Options then
@@ -1092,36 +1403,122 @@ begin
       ds := FormatDateTime(FOwner.GetDisplayText(dtTodayFormat), Date(), FOwner.FFormatSettings);
     s := Format(s, [ds]);
   end;
+
+  hasRange := (coShowRange in FOwner.Options) and FOwner.FMultiSelect and (FOwner.FSelDates.Count > 1);
+
   w1 := FCanvas.TextWidth('aaa');
   w2 := FCanvas.TextWidth(' ');
   w3 := FCanvas.TextWidth(s);
-  rem := Size(r1).cx - w1 - w2 - w3;
-  halfRem := rem div 2;
-  if (rem < 0) then
+
+  if hasRange then
   begin
-    Inc(r1.Left, halfRem);
-    Dec(r1.Right, halfRem);
-    rem := 0;
-  end;
-  r2 := r1;
+    startDate := FOwner.FSelDates[0];
+    endDate := FOwner.FSelDates[FOwner.FSelDates.Count - 1];
+    startText := FormatDateTime(FOwner.GetDisplayText(dtTodayFormat), startDate, FOwner.FFormatSettings);
+    endText := FormatDateTime(FOwner.GetDisplayText(dtTodayFormat), endDate, FOwner.FFormatSettings);
 
-  r1.Left := r1.Left + halfRem;
-  r1.Right := r1.Left + w1;
-  InflateRect(r1, 0, -FCellSize.cy div 5);
-  if (FCanvas.Pen.Color <> FOwner.Colors.TodayFrameColor) then
-    FCanvas.Pen.Color := FOwner.Colors.TodayFrameColor;
-  FCanvas.Pen.Style := psSolid;
-  FCanvas.Pen.Width := 2;
-  FCanvas.Frame(r1);
-  FCanvas.Pen.Width := 1;
+    { Use the current font size and add extra padding to avoid wrapping }
+    w4 := Max(FCanvas.TextWidth(startText), FCanvas.TextWidth(endText)) + 8;
 
-  r2.Left := r1.Right + w2;
-  r2.Right := r2.Left + w3 + 2;
-  if (coBoldToday in FOwner.Options) then
-    FCanvas.Font.Style := [fsBold]
+    { Added more space between today text and range (12 instead of 8) }
+    totalWidth := w1 + w2 + w3 + 12 + w4;
+
+    { Position the today indicator on the left side }
+    iconRect := r1;
+    iconRect.Left := r1.Left + Max(2, (Size(r1).cx - totalWidth) div 2);
+    iconRect.Right := iconRect.Left + w1;
+    InflateRect(iconRect, 0, -FCellSize.cy div 5);
+    if (FCanvas.Pen.Color <> FOwner.Colors.TodayFrameColor) then
+      FCanvas.Pen.Color := FOwner.Colors.TodayFrameColor;
+    FCanvas.Pen.Style := psSolid;
+    FCanvas.Pen.Width := 2;
+    FCanvas.Frame(iconRect);
+    FCanvas.Pen.Width := 1;
+
+    todayTextRect := iconRect;
+    todayTextRect.Left := iconRect.Right + w2;
+    todayTextRect.Right := todayTextRect.Left + w3 + 2;
+    if (coBoldToday in FOwner.Options) then
+      FCanvas.Font.Style := [fsBold]
+    else
+      FCanvas.Font.Style := [];
+    FCanvas.TextRect(todayTextRect, 0, 0, s, FTextStyle);
+
+    FTodayRect := Rect(iconRect.Left, r1.Top, todayTextRect.Right, r1.Bottom);
+
+    { Draw the range on the right as two lines in the current format }
+    DrawTodayRange(Rect(todayTextRect.Right + 12, r1.Top, todayTextRect.Right + 12 + w4, r1.Bottom), startDate, endDate);
+  end
   else
-    FCanvas.Font.Style := [];
-  FCanvas.TextRect(r2, 0, 0, s, FTextStyle);
+  begin
+    rem := Size(r1).cx - w1 - w2 - w3;
+    halfRem := rem div 2;
+    if (rem < 0) then
+    begin
+      Inc(r1.Left, halfRem);
+      Dec(r1.Right, halfRem);
+      rem := 0;
+    end;
+
+    iconRect := r1;
+    iconRect.Left := iconRect.Left + halfRem;
+    iconRect.Right := iconRect.Left + w1;
+    InflateRect(iconRect, 0, -FCellSize.cy div 5);
+    if (FCanvas.Pen.Color <> FOwner.Colors.TodayFrameColor) then
+      FCanvas.Pen.Color := FOwner.Colors.TodayFrameColor;
+    FCanvas.Pen.Style := psSolid;
+    FCanvas.Pen.Width := 2;
+    FCanvas.Frame(iconRect);
+    FCanvas.Pen.Width := 1;
+
+    todayTextRect := iconRect;
+    todayTextRect.Left := iconRect.Right + w2;
+    todayTextRect.Right := todayTextRect.Left + w3 + 2;
+    if (coBoldToday in FOwner.Options) then
+      FCanvas.Font.Style := [fsBold]
+    else
+      FCanvas.Font.Style := [];
+    FCanvas.TextRect(todayTextRect, 0, 0, s, FTextStyle);
+
+    FTodayRect := Rect(iconRect.Left, r1.Top, todayTextRect.Right, r1.Bottom);
+  end;
+end;
+
+{ Draw the selected range as two lines using the today format }
+procedure TCalDrawer.DrawTodayRange(ACellRect: TRect; AStartDate, AEndDate: TDate);
+var
+  startText, endText, rangeText: string;
+  savedStyle: TTextStyle;
+  savedFontStyle: TFontStyles;
+  savedFontColor: TColor;
+begin
+  startText := FormatDateTime(FOwner.GetDisplayText(dtTodayFormat), AStartDate, FOwner.FFormatSettings);
+  endText := FormatDateTime(FOwner.GetDisplayText(dtTodayFormat), AEndDate, FOwner.FFormatSettings);
+  rangeText := startText + LineEnding + endText;
+
+  savedFontStyle := FCanvas.Font.Style;
+  savedFontColor := FCanvas.Font.Color;
+  savedStyle := FTextStyle;
+
+  { Removed the font size adjustment, now it matches the main font }
+  FCanvas.Font.Style := [];
+  if coUseTopRowColors in FOwner.Options then
+    FCanvas.Font.Color := FOwner.Colors.TopRowTextColor
+  else
+    FCanvas.Font.Color := FOwner.Colors.TextColor;
+
+  FTextStyle.Alignment := taCenter;
+  FTextStyle.Layout := tlCenter;
+  FTextStyle.SingleLine := False;
+
+  FCanvas.Brush.Style := bsClear;
+  FCanvas.TextRect(ACellRect, 0, 0, rangeText, FTextStyle);
+
+  FTextStyle := savedStyle;
+  FCanvas.Font.Style := savedFontStyle;
+  FCanvas.Font.Color := savedFontColor;
+
+  FRangeRect := ACellRect;
 end;
 
 procedure TCalDrawer.DrawTopRow;
@@ -1384,6 +1781,7 @@ var
   cell: TSize;
   Rm, Ry: TRect;
   sm: TCalSelMode;
+  startDate: TDate;
 begin
   sm := FOwner.SelMode(Shift);
   cell := GetCellAt(APoint);
@@ -1416,6 +1814,19 @@ begin
 
     FirstDateRow..LastDateRow:
       FOwner.ChangeDateTo(GetDateOfCell(cell), sm);
+
+    TodayRow:
+    begin
+      { Click on the range jumps to the range start, otherwise - to today }
+      if (coShowRange in FOwner.Options) and (FOwner.FSelDates.Count > 1) and (FRangeRect.Right > FRangeRect.Left) and
+        PtInRect(FRangeRect, APoint) then
+      begin
+        startDate := FOwner.FSelDates[0];
+        FOwner.NavigateView(startDate);
+      end
+      else
+        GotoToday;
+    end;
 
     else
       GotoToday;
@@ -1458,6 +1869,7 @@ begin
   FColors[10] := clHighlight;      //  TopRowColor
   FColors[11] := clHighlightText;  //  TopRowTextColor
   FColors[12] := clRed;            //  WeekendColor
+  FColors[13] := clDefault;        //  EventFocusColor
 end;
 
 function TCalColors.GetColor(AIndex: integer): TColor;
@@ -1479,6 +1891,7 @@ begin
   inherited Create(anOwner);
   FFormatSettings := DefaultFormatSettings;
   FCalDrawer := TCalDrawer.Create(Self);
+  FEvents := TCalEventList.Create(Self);
   FSelDates := TCalDateList.Create;
   FColors := TCalColors.Create(self);
   //Color := clWhite;
@@ -1514,6 +1927,7 @@ end;
 
 destructor TCalendarLite.Destroy;
 begin
+  FreeAndNil(FEvents);
   FreeAndNil(FSelDates);
   FreeAndNil(FColors);
   SetLength(FCalDrawer.FRowPositions, 0);
@@ -1830,6 +2244,9 @@ begin
 end;
 
 procedure TCalendarLite.MouseDown(Button: TMouseButton; Shift: TShiftState; X, Y: integer);
+var
+  ev: TCalEventItem;
+  dt: TDate;
 begin
   inherited MouseDown(Button, Shift, X, Y);
 
@@ -1846,6 +2263,18 @@ begin
 
   // Save the currently selected date so DblClick can extend it into a range
   FPrevSingleAnchor := FPrevDate;
+
+  // Handle click on an event square before normal click processing
+  if Assigned(FOnEventClick) and (Button = mbLeft) and Assigned(FCalDrawer) then
+  begin
+    ev := FCalDrawer.GetEventAt(FClickPoint);
+    if Assigned(ev) then
+    begin
+      dt := FCalDrawer.GetEventDateAt(FClickPoint);
+      FOnEventClick(Self, ev, dt);
+      exit;
+    end;
+  end;
 
   InternalClick;
 
@@ -1870,6 +2299,9 @@ procedure TCalendarLite.MouseLeave;
 begin
   HideHintWindow;
   FPrevMouseDate := 0;
+  FPrevEvent := nil;
+  if Assigned(FCalDrawer) then
+    FCalDrawer.HoveredEvent := nil;
 end;
 
 procedure TCalendarLite.MouseMove(Shift: TShiftState; X, Y: integer);
@@ -1879,6 +2311,8 @@ var
   FirstDayOfView: TDate;
   LastDayOfView: TDate;
   InBounds: boolean;
+  ev: TCalEventItem;
+  TopOfGrid, BottomOfGrid: integer;
 begin
   inherited MouseMove(Shift, X, Y);
 
@@ -1892,9 +2326,13 @@ begin
     FirstDayOfView := EncodeDate(FCalDrawer.FThisYear, FCalDrawer.FThisMonth, 1);
     LastDayOfView := EndOfTheMonth(FirstDayOfView);
 
-    if InBounds and (dt > 0) and (dt < FirstDayOfView) then
+    // Get the vertical boundaries of the date grid
+    TopOfGrid := FCalDrawer.GetRowRect(FirstDateRow).Top;
+    BottomOfGrid := FCalDrawer.GetRowRect(LastDateRow).Bottom;
+
+    if InBounds and ((Y < TopOfGrid) or ((dt > 0) and (dt < FirstDayOfView))) then
     begin
-      // Pointer over leading days of the previous month; scroll back
+      // Pointer above the date grid or over leading days of the previous month; scroll back
       if not FAutoScrolling or (FLastAutoScrollDir <> -1) then
       begin
         FAutoScrolling := True;
@@ -1908,9 +2346,9 @@ begin
         AutoScrollTo(-1);
       end;
     end
-    else if InBounds and (dt > 0) and (dt > LastDayOfView) then
+    else if InBounds and ((Y > BottomOfGrid) or ((dt > 0) and (dt > LastDayOfView))) then
     begin
-      // Pointer over trailing days of the next month; scroll forward
+      // Pointer below the date grid or over trailing days of the next month; scroll forward
       if not FAutoScrolling or (FLastAutoScrollDir <> +1) then
       begin
         FAutoScrolling := True;
@@ -1940,26 +2378,56 @@ begin
     end
     else
     begin
-      // Outside the date grid (header, hint row, or beyond the control)
+      // Outside the date grid (e.g., out of the control bounds)
       FAutoScrolling := False;
       FLastAutoScrollDir := 0;
       FLastScrollY := 0;
     end;
   end;
 
-  if ShowHint and Assigned(FCalDrawer) then
+  if Assigned(FCalDrawer) then
   begin
-    c := FCalDrawer.GetCellAt(Point(X, Y));
-    dt := FCalDrawer.GetDateOfCell(c);
-    if (dt > 0) and (dt <> FPrevMouseDate) then
+    ev := FCalDrawer.GetEventAt(Point(X, Y));
+
+    { Update hover state for visual feedback }
+    if FCalDrawer.HoveredEvent <> ev then
+      FCalDrawer.HoveredEvent := ev;
+
+    if Assigned(ev) then
     begin
-      HideHintWindow;
-      ShowHintWindow(Point(X, Y), dt);
+      { Only show the hint if we just entered this event }
+      if FPrevEvent <> ev then
+      begin
+        HideHintWindow;
+        ShowEventHintWindow(Point(X, Y), ev);
+        FPrevEvent := ev;
+      end;
+      FPrevMouseDate := 0;
     end
     else
-    if (dt = 0) then
-      HideHintWindow;
-    FPrevMouseDate := dt;
+    begin
+      FPrevEvent := nil;
+
+      { Standard day hints still depend on ShowHint }
+      if ShowHint then
+      begin
+        c := FCalDrawer.GetCellAt(Point(X, Y));
+        dt := FCalDrawer.GetDateOfCell(c);
+        if (dt > 0) and (dt <> FPrevMouseDate) then
+        begin
+          HideHintWindow;
+          ShowHintWindow(Point(X, Y), dt);
+        end
+        else if (dt = 0) then
+          HideHintWindow;
+        FPrevMouseDate := dt;
+      end
+      else
+      begin
+        HideHintWindow;
+        FPrevMouseDate := 0;
+      end;
+    end;
   end;
 end;
 
@@ -2141,6 +2609,19 @@ end;
 function TCalendarLite.SelectedDates: TCalDateArray;
 begin
   Result := FSelDates.AsArray;
+end;
+
+function TCalendarLite.SelectionRange(out AStart, AEnd: TDate): boolean;
+begin
+  Result := (FSelDates.Count > 1);
+  if not Result then
+  begin
+    AStart := FDate;
+    AEnd := FDate;
+    exit;
+  end;
+  AStart := FSelDates[0];
+  AEnd := FSelDates[FSelDates.Count - 1];
 end;
 
 procedure TCalendarLite.SetButtonHeight(const AValue: integer);
@@ -2616,6 +3097,25 @@ begin
 
   if txt = '' then
     exit;
+
+  APoint := ClientToScreen(APoint);
+  Hint := txt;
+  Application.Hint := txt;
+  Application.ActivateHint(APoint);
+end;
+
+{ Show a hint with the event caption }
+procedure TCalendarLite.ShowEventHintWindow(APoint: TPoint; AEvent: TCalEventItem);
+var
+  txt: string;
+begin
+  if not Assigned(AEvent) then exit;
+  txt := AEvent.Name;
+  if txt = '' then exit;
+
+  { Force ShowHint to bypass LCL checks for ActivateHint }
+  if not ShowHint then
+    ShowHint := True;
 
   APoint := ClientToScreen(APoint);
   Hint := txt;
