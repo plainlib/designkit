@@ -168,6 +168,7 @@ type
     constructor Create(AOwner: TCalendarLite);
     destructor Destroy; override;
     procedure Draw;
+    function GetRowRect(ARow: integer): TRect;
     property BoundsRect: TRect read FBoundsRect write SetBoundsRect;
     property Buffer: TBitmap read FBuffer;
   end;
@@ -225,7 +226,12 @@ type
     FPrevDate: TDate;
     FPrevSingleAnchor: TDate;
     FDragStartDate: TDate;
+    FLastDragDate: TDate;
     FDragging: boolean;
+    FAutoScrolling: boolean;
+    FLastAutoScrollDir: integer;
+    FLastScrollY: integer;
+    FNavigatingView: boolean;
     FOnRangeSelected: TCalRangeEvent;
     FSavedHint: string;
     FMultiSelect: boolean;
@@ -262,7 +268,9 @@ type
     procedure SetOptions(AValue: TCalOptions);
     procedure SetStartingDayOfWeek(AValue: TDayOfWeek);
     procedure SetWeekendDays(AValue: TDaysOfWeek);
+    procedure AutoScrollTo(ADelta: integer);
     procedure FillSelectedRange(AStart, AEnd: TDate);
+    procedure NavigateView(ADate: TDate);
     procedure NotifyRangeSelected;
     procedure TimerExpired(Sender: TObject);
     procedure YearMenuItemClicked(Sender: TObject);
@@ -499,7 +507,7 @@ const
     'Праздники и выходные для %d не установлены,"dddd"", ""dd mmm"", ""yyyy",mmmm yyyy';
 
   DBLCLICK_INTERVAL = 300;   // Interval (ms) for detection of a double-click
-
+  AUTOSCROLL_STEP = 25;      // Pixels past the last scroll Y to trigger another month
 
 function SameRect(const R1, R2: TRect): boolean;
 begin
@@ -1283,6 +1291,11 @@ begin
   Result.cx := FColPositions[aCol];
 end;
 
+function TCalDrawer.GetRowRect(ARow: integer): TRect;
+begin
+  Result := GetCellAtColRow(1, ARow);
+end;
+
 function TCalDrawer.GetDateOfCell(ACell: TSize): TDate;
 var
   diff: integer;
@@ -1349,12 +1362,12 @@ begin
   if (AMonth < 1) or (AMonth > 12) then
     exit;
   FThisDay := EnsureRange(FThisDay, 1, DaysInAMonth(FThisYear, AMonth));
-  FOwner.Date := EncodeDate(FThisYear, AMonth, FThisDay);
+  FOwner.NavigateView(EncodeDate(FThisYear, AMonth, FThisDay));
 end;
 
 procedure TCalDrawer.GotoToday;
 begin
-  FOwner.Date := Date();
+  FOwner.NavigateView(Date());
 end;
 
 procedure TCalDrawer.GotoYear(AYear: word);
@@ -1362,7 +1375,7 @@ begin
   if (FThisMonth < 1) or (FThisMonth > 12) then
     exit;
   FThisDay := EnsureRange(FThisday, 1, DaysInAMonth(AYear, FThisMonth));
-  FOwner.Date := EncodeDate(AYear, FThisMonth, FThisDay);
+  FOwner.NavigateView(EncodeDate(AYear, FThisMonth, FThisDay));
 end;
 
 procedure TCalDrawer.LeftClick(APoint: TPoint; Shift: TShiftState);
@@ -1377,8 +1390,8 @@ begin
   case cell.cy of
     TopRow:
       case cell.cx of
-        1: FOwner.Date := IncYear(FOwner.Date, -1);
-        2: FOwner.Date := IncMonth(FOwner.Date, -1);
+        1: FOwner.NavigateView(IncYear(FOwner.Date, -1));
+        2: FOwner.NavigateView(IncMonth(FOwner.Date, -1));
         3..5:
         begin
           GetMonthYearRects(Rm{%H-}, Ry{%H-});
@@ -1395,8 +1408,8 @@ begin
             FOwner.FPopupMenu.Popup(ppopup.x, ppopup.y);
           end;
         end;
-        6: FOwner.Date := IncMonth(FOwner.Date, +1);
-        7: FOwner.Date := IncYear(FOwner.Date, +1);
+        6: FOwner.NavigateView(IncMonth(FOwner.Date, +1));
+        7: FOwner.NavigateView(IncYear(FOwner.Date, +1));
       end;
 
     DayRow: ;
@@ -1795,7 +1808,9 @@ begin
     VK_HOME: ChangeDateTo(StartOfTheMonth(FDate), sm);
     VK_END: ChangeDateTo(EndOfTheMonth(FDate), sm);
     VK_PRIOR,
-    VK_NEXT: if not FMultiSelect and (ssCtrl in Shift) then
+    VK_NEXT: if FMultiSelect then
+        NavigateView(IncMonth(FDate, Delta(Key = VK_NEXT)))
+      else if ssCtrl in Shift then
         Date := IncYear(FDate, Delta(Key = VK_NEXT))
       else
         Date := IncMonth(FDate, Delta(Key = VK_NEXT));
@@ -1838,7 +1853,11 @@ begin
   if FMultiSelect and (Button = mbLeft) and Assigned(FCalDrawer) then
   begin
     FDragStartDate := FCalDrawer.GetDateOfCell(FCalDrawer.GetCellAt(FClickPoint));
+    FLastDragDate := 0;
     FDragging := False;
+    FAutoScrolling := False;
+    FLastAutoScrollDir := 0;
+    FLastScrollY := 0;
   end;
 end;
 
@@ -1857,6 +1876,9 @@ procedure TCalendarLite.MouseMove(Shift: TShiftState; X, Y: integer);
 var
   c: TSize;
   dt: TDate;
+  FirstDayOfView: TDate;
+  LastDayOfView: TDate;
+  InBounds: boolean;
 begin
   inherited MouseMove(Shift, X, Y);
 
@@ -1865,12 +1887,63 @@ begin
   begin
     c := FCalDrawer.GetCellAt(Point(X, Y));
     dt := FCalDrawer.GetDateOfCell(c);
-    if (dt > 0) and (dt <> FDate) then
+    InBounds := (Y >= 0) and (Y < Height);
+
+    FirstDayOfView := EncodeDate(FCalDrawer.FThisYear, FCalDrawer.FThisMonth, 1);
+    LastDayOfView := EndOfTheMonth(FirstDayOfView);
+
+    if InBounds and (dt > 0) and (dt < FirstDayOfView) then
     begin
-      FDragging := True;
-      FillSelectedRange(FDragStartDate, dt);
-      FDate := dt;
-      Draw;
+      // Pointer over leading days of the previous month; scroll back
+      if not FAutoScrolling or (FLastAutoScrollDir <> -1) then
+      begin
+        FAutoScrolling := True;
+        FLastAutoScrollDir := -1;
+        FLastScrollY := Y;
+        AutoScrollTo(-1);
+      end
+      else if Y < FLastScrollY - AUTOSCROLL_STEP then
+      begin
+        FLastScrollY := Y;
+        AutoScrollTo(-1);
+      end;
+    end
+    else if InBounds and (dt > 0) and (dt > LastDayOfView) then
+    begin
+      // Pointer over trailing days of the next month; scroll forward
+      if not FAutoScrolling or (FLastAutoScrollDir <> +1) then
+      begin
+        FAutoScrolling := True;
+        FLastAutoScrollDir := +1;
+        FLastScrollY := Y;
+        AutoScrollTo(+1);
+      end
+      else if Y > FLastScrollY + AUTOSCROLL_STEP then
+      begin
+        FLastScrollY := Y;
+        AutoScrollTo(+1);
+      end;
+    end
+    else if InBounds and (dt > 0) then
+    begin
+      // Pointer inside the current month; extend the range
+      FAutoScrolling := False;
+      FLastAutoScrollDir := 0;
+      FLastScrollY := 0;
+      if dt <> FLastDragDate then
+      begin
+        FDragging := True;
+        FLastDragDate := dt;
+        FillSelectedRange(FDragStartDate, dt);
+        Draw;
+      end;
+    end
+    else
+    begin
+      // Outside the date grid (header, hint row, or beyond the control)
+      FAutoScrolling := False;
+      FLastAutoScrollDir := 0;
+      FLastScrollY := 0;
     end;
   end;
 
@@ -1904,6 +1977,9 @@ begin
   begin
     FDragging := False;
     FDragStartDate := 0;
+    FLastDragDate := 0;
+    FAutoScrolling := False;
+    FLastScrollY := 0;
     exit;
   end;
 
@@ -1923,6 +1999,10 @@ begin
 
   FDragging := False;
   FDragStartDate := 0;
+  FLastDragDate := 0;
+  FAutoScrolling := False;
+  FLastAutoScrollDir := 0;
+  FLastScrollY := 0;
 
   FillSelectedRange(AStart, AEnd);
   FDate := dt;
@@ -2107,8 +2187,12 @@ begin
   if FDate = dateValue then Exit;
   oldMonth := MonthOf(FDate);
   FDate := dateValue;
-  FPrevDate := dateValue;
-  FSelDates.Clear;
+  // View navigation must keep the multi-select range and anchor intact
+  if not FNavigatingView then
+  begin
+    FPrevDate := dateValue;
+    FSelDates.Clear;
+  end;
   DateChange;
   if MonthOf(FDate) <> oldMonth then
     MonthChange;
@@ -2328,6 +2412,15 @@ begin
   Draw;
 end;
 
+procedure TCalendarLite.AutoScrollTo(ADelta: integer);
+begin
+  FDragging := True;
+  FLastDragDate := 0;
+  NavigateView(IncMonth(FDate, ADelta));
+  FillSelectedRange(FDragStartDate, FDate);
+  Draw;
+end;
+
 procedure TCalendarLite.FillSelectedRange(AStart, AEnd: TDate);
 var
   d: TDate;
@@ -2350,6 +2443,16 @@ begin
   begin
     FSelDates.Insert(FSelDates.Count, d);
     d := d + 1;
+  end;
+end;
+
+procedure TCalendarLite.NavigateView(ADate: TDate);
+begin
+  FNavigatingView := True;
+  try
+    Date := ADate;
+  finally
+    FNavigatingView := False;
   end;
 end;
 
