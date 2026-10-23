@@ -16,155 +16,6 @@ All components are installed on the **Common Controls** tab of the component pal
 
 ---
 
-## TSpellChecker (Common Controls ![spellchecker](img/TSpellChecker.png))
-
-![sample_spellchecker](img/sample_spellchecker.png)
-
-`TSpellChecker` is a non‑visual component that adds spell‑checking capabilities to a `TRichMemo` control. It supports both the native Windows Spell Checker (on Windows) and Hunspell (cross‑platform), with background checking, real‑time debounced updates, cancellation, and an automatic context menu with suggestions.
-
-### Features
-
-- Background spell checking with cancellation support.
-- Debounced real‑time checking (configurable delay).
-- Automatic application of error underlines (with `AutoApply`).
-- Built‑in context menu with spelling suggestions (replaces the word when a suggestion is chosen).
-- Integration with an external `PopupMenu` – suggestions can be placed directly in the menu or inside a submenu.
-- Supports Windows Spell Checker (`seWindows`) and Hunspell (`seHunspell`).
-- For Hunspell: loads dictionaries from files, streams, or automatically downloads them from a URL (LibreOffice dictionaries repository).
-- Chunked background checking of very large documents with incremental drawing of underlines, so errors appear at the top of the document while the rest is still being checked.
-- Option to check only the visible portion of the RichMemo (`CheckVisibleOnly`), with automatic re-check on scroll or text change. Works together with `ChunkedCheck`.
-- The chunked pass starts from the currently visible area, so the user sees fresh results where he is looking even when the document is scrolled far from the beginning.
-- Events: `OnSpellCheckComplete` (reports error count), `OnContextPopup` (allows custom handling).
-
-### Key Properties
-
-| Property               | Default        | Description |
-|------------------------|----------------|-------------|
-| `RichMemo`             | `nil`          | The `TRichMemo` control to be spell‑checked. |
-| `Language`             | `''`           | BCP‑47 language tag (e.g. `'en-US'`, `'ru-RU'`). |
-| `Enabled`              | `True`         | Enables/disables spell checking. |
-| `Options`              | `[scoSpelling]`| Set of `TSpellCheckOptions` (`scoSpelling`, `scoComprehensive` – Windows only). |
-| `AddEmptySuggestions`  | `True`         | Include errors even if no suggestions are available. |
-| `RealTime`             | `False`        | Automatically check after text changes (with debounce). |
-| `CheckDelay`           | `1000`         | Debounce delay in milliseconds for real‑time checks. |
-| `AutoApply`            | `True`         | Automatically apply underlines after a check completes. |
-| `AutoContextMenu`      | `True`         | Automatically handle `OnContextPopup` to show suggestion menu. |
-| `MemoChangeOnReplace`  | `False`        | When `True`, `RichMemo.OnChange` fires when a word is replaced from the suggestions menu. When `False`, `OnChange` is suppressed during the replacement to avoid reentrant spell checking. |
-| `PopupMenu`            | `nil`          | An external `TPopupMenu` to integrate suggestions into (if `nil`, uses default behaviour). |
-| `SubMenu`              | `False`        | If `True`, suggestions are placed in a submenu. |
-| `SubMenuCaption`       | `'Suggestions'`| Caption of the submenu when `SubMenu` is `True`. |
-| `SubMenuIndex`         | `0`            | Index where suggestions (or submenu) are inserted in `PopupMenu`. |
-| `Engine`               | `seWindows`    | Spell engine: `seWindows` or `seHunspell`. |
-| `DicPath`              | `''`           | Directory for Hunspell dictionaries (absolute or relative to the application). |
-| `DicUrl`               | `'https://raw.githubusercontent.com/plainlib/dictionaries/main/{plaindict}'` | URL template for downloading dictionaries. Placeholders: `{dict}` (language code + .aff/.dic), `{plaindict}` (flat dictionary name), `{libredict}` (LibreOffice internal path), `{wooormdict}` (Wooorm dictionary path). |
-| `ChunkedCheck`         | `False`        | When `True`, large texts are checked in chunks and underlines are drawn incrementally while the background pass is still running. The pass starts from the currently visible area, then covers the text above and below. |
-| `ChunkSize`            | `16384`        | Size of a single chunk in bytes (used when `ChunkedCheck` is `True`). The real chunk is extended to the next whitespace, so a word is never split in half. Minimum 256 at runtime, no minimum in the designer. |
-| `CheckVisibleOnly`     | `False`        | When `True`, only the text currently visible in the RichMemo is checked. A polling timer re-runs the check whenever the visible range changes (scroll, resize, or text change), so the rest of the document is never touched. Can be combined with `ChunkedCheck`. |
-| `TwoPhaseSuggestions`  | `False`        | When `True`, the check runs in two passes. The first pass only detects errors and draws underlines, the second pass generates suggestions in the background for each detected error. Hunspell engine only. |
-
-### Events
-
-| Event                    | Description |
-|--------------------------|-------------|
-| `OnSpellCheckComplete`   | Fired after a check finishes (and after underlines are applied, if `AutoApply` is `True`). Provides the number of errors found. |
-| `OnContextPopup`         | Called before the component's built-in context menu handling. Set `Handled` to `True` to prevent the component from showing its menu. |
-| `OnReplace`              | Fired right after a word was replaced from the suggestions menu. Use it when you need to react to a replacement, because `RichMemo.OnChange` does not fire in that case. |
-
-### Usage
-
-1. Place a `TSpellChecker` on a form.
-2. Assign its `RichMemo` property to a `TRichMemo` control.
-3. Set the `Language` property (e.g. `'en-US'`).
-4. Optionally set `RealTime := True` to enable live checking.
-5. At runtime, the component will automatically check the text and underline errors. Right‑click on a misspelled word to see suggestions.
-
-Example for Hunspell with automatic download:
-
-```pascal
-var
-  Spell: TSpellChecker;
-begin
-  Spell := TSpellChecker.Create(Self);
-  Spell.RichMemo := RichMemo1;
-  Spell.Language := 'ru-RU';
-  Spell.Engine := seHunspell;
-  Spell.DicPath := '.\dictionaries'; // local folder
-  Spell.DicUrl := 'https://raw.githubusercontent.com/LibreOffice/dictionaries/master/{libredict}';
-  Spell.RealTime := True;
-  Spell.CheckDelay := 800;
-  Spell.AutoApply := True;
-  Spell.ChunkedCheck := True;
-  Spell.ChunkSize := 8192; // Roughly 2 to 4 pages
-end;
-```
-
-If you want to use a custom `PopupMenu` with suggestions inserted directly:
-
-```pascal
-Spell.PopupMenu := MyPopupMenu;
-Spell.SubMenu := False; // suggestions appear directly in the menu
-Spell.SubMenuIndex := 2; // insert after the second item
-```
-
-### Chunked checking of large documents
-
-By default the component checks the entire text in one background pass and applies all underlines at once. This is fine for short and medium documents, but on very large texts the user has to wait until the whole pass is finished before any error is highlighted.
-
-Enable `ChunkedCheck` to split the text into pieces and draw underlines incrementally:
-
-```pascal
-Spell.ChunkedCheck := True;
-Spell.ChunkSize := 16384; // roughly 4 to 5 pages of Latin text
-```
-
-How it works:
-
-- The text is split at whitespace boundaries, so words are never cut in half. A chunk may be larger than `ChunkSize` if no whitespace is found within a reasonable distance.
-- As soon as the first chunk is processed, its errors are drawn. The user sees results at the top of the document while the rest is still being checked.
-- The pass starts from the area currently visible in the memo, then covers the text above it and finally the text below it. This way, if the user has scrolled to the middle of a long document, fresh underlines appear where he is looking first.
-- Existing underlines from the previous run are kept on screen during the pass and replaced atomically in a single operation at the end. This avoids flicker.
-- Total work stays linear in the number of errors: each chunk draws only its own newly found errors, and the final replace redraws everything once.
-
-Suggested chunk sizes:
-
-| Language family      | Recommended `ChunkSize` | Approximate size         |
-|----------------------|-------------------------|--------------------------|
-| Latin (English, etc.)| 16384 – 32768           | 4 to 8 pages             |
-| Cyrillic (Russian)   | 8192 – 16384            | 2 to 4 pages             |
-| Any, "instant" feel  | 2048                    | half a page or less      |
-
-The property is ignored when `ChunkedCheck` is `False` or when the text is shorter than `ChunkSize`.
-
-During design time the minimum `ChunkSize` is relaxed to `1` so the behaviour can be tested word by word. At runtime the minimum is `256` to avoid pathological fragmentation.
-
-### Checking only the visible area
-
-On very large documents even the chunked pass may spend time on parts the user is not looking at. Enable `CheckVisibleOnly` to restrict checking to the text that is currently visible in the RichMemo:
-
-```pascal
-Spell.CheckVisibleOnly := True;
-```
-
-How it works:
-
-- The component polls the visible range every 200 ms. When the range changes (scroll, resize, or text change), the check is re-run for the new range only.
-- The visible range is extended to whole-word boundaries on both ends, so a word that is only partially visible is checked in full and never misreported as a fragment.
-- Only the visible portion is checked in each pass, so the result appears much faster on long documents. Errors outside the visible range are not highlighted until they are scrolled into view.
-- The mode can be combined with `ChunkedCheck`. If the visible range is larger than `ChunkSize`, it is still split into chunks and drawn incrementally.
-
-When to use:
-
-- Large documents (many pages) where checking the whole text in the background would be wasteful.
-- Read-only or preview-style controls where the user mostly scrolls through the text.
-
-When not to use:
-
-- Short texts where checking everything at once is already fast enough and the user expects the whole document to be highlighted.
-
-The property has no effect while `Enabled` is `False`.
-
----
-
 ## TFormGrip (Common Controls ![formgrip](img/TFormGrip.png))
 
 `TFormGrip` is a visual control that draws a size grip in a selected corner
@@ -298,6 +149,96 @@ begin
   Btn.TooltipDuration := 3000;
   Btn.OffsetY := 2; // move text slightly down
 end;
+```
+
+---
+
+## TCalendarLite (Misc ![calendarlite](img/TCalendarLite.png))
+
+`TCalendarLite` is a lightweight calendar component, a `TGraphicControl`
+descendant, which is consequently not dependent on any widgetset. Unlike
+most calendars, it is not a fixed-size component; it aligns and resizes
+as needed.
+
+The component displays a standard month grid with a header for the month
+and year, navigation arrows for switching between months, and a row of
+week-day names. It can optionally show the adjacent days of the previous
+and next months. Selection is controlled by the `MultiSelect` property
+and the `DateTime` / `SelectedDates` members, and the visual style can be
+adjusted through `Colors`, `WeekEndColor`, `ShowWeekNumbers`, and
+`ShowToday`.
+
+Features relevant to DesignKit users:
+
+- **Range selection:** set `MultiSelect := True` and use Shift+click to
+  highlight a range of days, or Ctrl+click to select non-contiguous days.
+- **Any widgetset:** being a `TGraphicControl`, it has no native
+  counterpart and behaves identically on Windows, Linux, and macOS.
+- **Resizable:** it is not fixed-size and follows the LCL `Align`
+  property.
+
+### Key Properties
+
+| Property           | Default            | Description |
+|--------------------|--------------------|-------------|
+| `DateTime`         | `Now`              | Currently focused date. |
+| `MultiSelect`      | `False`            | Enables selection of multiple days (range or non-contiguous). |
+| `SelectedDates`    | empty              | List of selected dates when `MultiSelect` is enabled. |
+| `MinDate`, `MaxDate` | `0` (unbounded)  | Limits the selectable range of days. |
+| `ShowWeekNumbers`  | `False`            | Displays the ISO week numbers column. |
+| `ShowToday`        | `False`            | Draws a highlight around the current day. |
+| `WeekEndColor`     | `clRed`            | Colour used for Saturday and Sunday captions. |
+| `Date`             | `Date`             | Gets or sets the selected date (single-selection mode). |
+
+`TCalendarLite` is a **third-party component** from the Lazarus CCR
+(Community Components Repository) and is bundled with DesignKit as a
+convenience. It is maintained independently of this package; please
+report component-specific bugs to the upstream CalLite project.
+
+### TCalendarLite license
+
+`TCalendarLite` is free software distributed under the **GNU Library
+General Public License, version 2 or later**, with a special linking
+exception that permits linking it with independent modules. The original
+license notice from the component's source header is reproduced below as
+required by its terms:
+
+```text
+{ TCalendarLite is a lightweight calendar component, a TGraphiccontrol
+  descendant, which is consequently not dependent on any widgetset.
+  It is not a fixed-size component, as are most calendars, but will align
+  and resize as needed
+
+  Originator    : H Page-Clark, 2013/2016
+  Contributions : Ariel Rodriguez, 2013
+                  Werner Pamler, 2013/2016
+                  John Greetham, 2016
+
+  This library is free software; you can redistribute it and/or modify it
+  under the terms of the GNU Library General Public License as published by
+  the Free Software Foundation; either version 2 of the License, or (at your
+  option) any later version with the following modification:
+
+  As a special exception, the copyright holders of this library give you
+  permission to link this library with independent modules to produce an
+  executable, regardless of the license terms of these independent modules,and
+  to copy and distribute the resulting executable under terms of your choice,
+  provided that you also meet, for each linked independent module, the terms
+  and conditions of the license of that module. An independent module is a
+  module which is not derived from or based on this library. If you modify
+  this library, you may extend this exception to your version of the library,
+  but you are not obligated to do so. If you do not wish to do so, delete this
+  exception statement from your version.
+
+  This program is distributed in the hope that it will be useful, but WITHOUT
+  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+  FITNESS FOR A PARTICULAR PURPOSE. See the GNU Library General Public License
+  for more details.
+
+  You should have received a copy of the GNU Library General Public License
+  along with this library; if not, write to the Free Software Foundation,
+  Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+}
 ```
 
 ---

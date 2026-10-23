@@ -8,12 +8,13 @@ unit designkit;
 interface
 
 uses
-  DesignKitRegister, FormGrip, FlatButton, SpellChecker, LazarusPackageIntf;
+  FormGrip, FlatButton, CalendarLite, DesignKitRegister, LazarusPackageIntf;
 
 implementation
 
 procedure Register;
 begin
+  RegisterUnit('CalendarLite', @CalendarLite.Register);
   RegisterUnit('DesignKitRegister', @DesignKitRegister.Register);
 end;
 

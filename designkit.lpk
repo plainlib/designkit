@@ -49,15 +49,6 @@ SOFTWARE."/>
     <Version Major="1"/>
     <Files>
       <Item>
-        <Filename Value="src\designkitregister.pas"/>
-        <HasRegisterProc Value="True"/>
-        <UnitName Value="DesignKitRegister"/>
-      </Item>
-      <Item>
-        <Filename Value="src\designkit.lrs"/>
-        <Type Value="LRS"/>
-      </Item>
-      <Item>
         <Filename Value="src\formgrip.pas"/>
         <UnitName Value="FormGrip"/>
       </Item>
@@ -66,8 +57,14 @@ SOFTWARE."/>
         <UnitName Value="FlatButton"/>
       </Item>
       <Item>
-        <Filename Value="src\spellchecker.pas"/>
-        <UnitName Value="SpellChecker"/>
+        <Filename Value="src\calendarlite.pas"/>
+        <HasRegisterProc Value="True"/>
+        <UnitName Value="CalendarLite"/>
+      </Item>
+      <Item>
+        <Filename Value="designkitregister.pas"/>
+        <HasRegisterProc Value="True"/>
+        <UnitName Value="DesignKitRegister"/>
       </Item>
     </Files>
     <RequiredPkgs>

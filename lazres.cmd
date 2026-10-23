@@ -1,8 +1,8 @@
 @echo off
 setlocal EnableDelayedExpansion
 
-set "RC=src\designkit.rc"
-set "LRS=src\designkit.lrs"
+set "RC=designkit.rc"
+set "LRS=designkit.lrs"
 set "LIST=%TEMP%\lazres.lst"
 
 if exist "%LIST%" del "%LIST%"
