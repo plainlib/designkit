@@ -1843,13 +1843,13 @@ begin
   FOwner := AOwner;
   FColors[0] := clSilver;          //  ArrowBorderColor
   FColors[1] := clSilver;          //  ArrowColor
-  FColors[2] := clWhite;           //  BackgroundColor
+  FColors[2] := clWindow;          //  BackgroundColor
   FColors[3] := clSilver;          //  BorderColor
   FColors[4] := clSilver;          //  DaylineColor
   FColors[5] := clRed;             //  HolidayColor
   FColors[6] := clSilver;          //  PastMonthColor
-  FColors[7] := clMoneyGreen;      //  SelectedDateColor
-  FColors[8] := clBlack;           //  TextColor
+  FColors[7] := clMenuHighlight;   //  SelectedDateColor
+  FColors[8] := clWindowText;      //  TextColor
   FColors[9] := clGray;            //  TodayFrameColor
   FColors[10] := clHighlight;      //  TopRowColor
   FColors[11] := clHighlightText;  //  TopRowTextColor
