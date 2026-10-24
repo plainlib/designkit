@@ -75,7 +75,7 @@ type
   THolidays = DWord;
   TGetHolidaysEvent = procedure(Sender: TObject; AMonth, AYear: integer; var Holidays: THolidays) of object;
 
-  TCalCellState = (csSelectedDay, csToday, csOtherMonth);
+  TCalCellState = (csSelectedDay, csToday, csOtherMonth, csSelectedRange);
   TCalCellStates = set of TCalCellState;
 
   TCalPrepareCanvasEvent = procedure(Sender: TObject; ACanvas: TCanvas; AYear, AMonth, ADay: word; AState: TCalCellStates) of object;
@@ -97,8 +97,9 @@ type
 
   TCalDateArray = array of TDate;
 
-  TCalSelMode = (smFirstSingle, smNextSingle, smFirstRange, smNextRange,
-    smFirstWeek, smNextWeek, smNextWeekRange);
+  // Single and range selections are now independent. Mouse interactions
+  // use toggle/move/extend; double-click clears or creates the range.
+  TCalSelMode = (smToggleSingle, smMoveSingle, smExtendRange);
 
   TLanguage = (lgEnglish, lgFrench, lgGerman, lgHebrew, lgSpanish, lgItalian,
     lgPolish, lgFinnish, lgGreek, lgRussian, lgCustom);
@@ -240,7 +241,7 @@ type
   TCalColors = class(TPersistent)
   private
     FOwner: TCalendarLite;
-    FColors: array[0..13] of TColor;
+    FColors: array[0..14] of TColor;
     function GetColor(AIndex: integer): TColor;
     procedure SetColor(AIndex: integer; AValue: TColor);
   public
@@ -248,18 +249,19 @@ type
   published
     property ArrowBorderColor: TColor index 0 read GetColor write SetColor default clSilver;
     property ArrowColor: TColor index 1 read GetColor write SetColor default clSilver;
-    property BackgroundColor: TColor index 2 read GetColor write SetColor default clWhite;
+    property BackgroundColor: TColor index 2 read GetColor write SetColor default clWindow;
     property BorderColor: TColor index 3 read GetColor write SetColor default clSilver;
     property DaylineColor: TColor index 4 read GetColor write SetColor default clSilver;
     property HolidayColor: TColor index 5 read GetColor write SetColor default clRed;
-    property PastMonthColor: TColor index 6 read GetColor write SetColor default clSilver;
-    property SelectedDateColor: TColor index 7 read GetColor write SetColor default clMoneyGreen;
-    property TextColor: TColor index 8 read GetColor write SetColor default clBlack;
-    property TodayFrameColor: TColor index 9 read GetColor write SetColor default clLime;
+    property PastMonthColor: TColor index 6 read GetColor write SetColor default clGray;
+    property SelectedDateColor: TColor index 7 read GetColor write SetColor default clMenuHighlight;
+    property TextColor: TColor index 8 read GetColor write SetColor default clWindowText;
+    property TodayFrameColor: TColor index 9 read GetColor write SetColor default clGray;
     property TopRowColor: TColor index 10 read GetColor write SetColor default clHighlight;
     property TopRowTextColor: TColor index 11 read GetColor write SetColor default clHighlightText;
     property WeekendColor: TColor index 12 read GetColor write SetColor default clRed;
-    property EventFocusColor: TColor index 13 read GetColor write SetColor default clAqua;
+    property EventFocusColor: TColor index 13 read GetColor write SetColor default clDefault;
+    property SelectedRangeColor: TColor index 14 read GetColor write SetColor default clSkyBlue;
   end;
 
   { TCalendarLite }
@@ -270,6 +272,7 @@ type
     FCalDrawer: TCalDrawer;
     FColors: TCalColors;
     FDate: TDateTime;
+    FSelectedDate: TDate;
     FCustomDayNames: string;
     FCustomDisplayTexts: string;
     FCustomMonthNames: string;
@@ -289,8 +292,8 @@ type
     FWeekendDays: TDaysOfWeek;
     FPrevEvent: TCalEventItem;
     FPrevMouseDate: TDate;
-    FPrevDate: TDate;
     FPrevSingleAnchor: TDate;
+    FShiftAnchor: TDate;
     FDragStartDate: TDate;
     FLastDragDate: TDate;
     FDragging: boolean;
@@ -358,6 +361,7 @@ type
     class function GetControlClassDefaultSize: TSize; override;
     procedure InternalClick;
     procedure KeyDown(var Key: word; Shift: TShiftState); override;
+    procedure KeyUp(var Key: word; Shift: TShiftState); override;
     procedure MonthChange; virtual;
     procedure MouseDown(Button: TMouseButton; Shift: TShiftState; X, Y: integer); override;
     procedure MouseEnter; override;
@@ -392,6 +396,8 @@ type
     procedure ClearSelectedDates;
     procedure Draw;  // Use instead of Invalidate to recreate the buffer
     function IsSelected(ADate: TDate): boolean;
+    function IsSingleSelected(ADate: TDate): boolean;
+    function IsInRange(ADate: TDate): boolean;
     function SelectionRange(out AStart, AEnd: TDate): boolean;
     function SelectedDates: TCalDateArray;
 
@@ -1151,13 +1157,20 @@ begin
       end;
 
       { Set default background color }
-      if FOwner.IsSelected(dt) then
+      // Range is drawn first so that a single selection on top of it wins
+      if FOwner.IsInRange(dt) then
       begin
-        FCanvas.Brush.Color := FOwner.FColors.SelectedDateColor;
-        Include(state, csSelectedDay);
+        FCanvas.Brush.Color := FOwner.FColors.SelectedRangeColor;
+        Include(state, csSelectedRange);
       end
       else
         FCanvas.Brush.Color := FOwner.Colors.BackgroundColor;
+
+      if FOwner.IsSingleSelected(dt) then
+      begin
+        FCanvas.Brush.Color := FOwner.FColors.SelectedDateColor;
+        Include(state, csSelectedDay);
+      end;
 
       { Set border pen of "today" cell }
       if (dt = todayDate) and (coShowTodayFrame in FOwner.Options) then
@@ -1223,7 +1236,6 @@ begin
 
   oldPen.Free;
   oldBrush.Free;
-
 end;
 
 procedure TCalDrawer.SetHoveredEvent(AValue: TCalEventItem);
@@ -1847,7 +1859,7 @@ begin
   FColors[3] := clSilver;          //  BorderColor
   FColors[4] := clSilver;          //  DaylineColor
   FColors[5] := clRed;             //  HolidayColor
-  FColors[6] := clSilver;          //  PastMonthColor
+  FColors[6] := clGray;            //  PastMonthColor
   FColors[7] := clMenuHighlight;   //  SelectedDateColor
   FColors[8] := clWindowText;      //  TextColor
   FColors[9] := clGray;            //  TodayFrameColor
@@ -1855,6 +1867,7 @@ begin
   FColors[11] := clHighlightText;  //  TopRowTextColor
   FColors[12] := clRed;            //  WeekendColor
   FColors[13] := clDefault;        //  EventFocusColor
+  FColors[14] := clSkyBlue;        //  SelectedRangeColor
 end;
 
 function TCalColors.GetColor(AIndex: integer): TColor;
@@ -1911,6 +1924,7 @@ begin
   FOptions := [coShowTodayFrame, coBoldHolidays, coShowWeekend, coShowHolidays, coShowTodayRow, coShowDayNames, coShowTopRow];
   SetLanguage(lgEnglish);
   FPrevMouseDate := 0;
+  FShiftAnchor := 0;
   Date := SysUtils.Date;
 end;
 
@@ -1932,83 +1946,36 @@ end;
 
 procedure TCalendarLite.ChangeDateTo(ADate: TDate; ASelMode: TCalSelMode);
 var
-  d, d1, d2: TDate;
   oldMonth: integer;
+  d1: TDate;
 begin
   oldMonth := MonthOf(FDate);
   FDate := ADate;
 
   case ASelMode of
-    smFirstSingle:
+    smToggleSingle:
     begin
-      FSelDates.Clear;
-      FSelDates.AddDate(ADate);
-      FPrevDate := ADate;
-    end;
-
-    smNextSingle:
-    begin
-      FSelDates.AddDate(ADate);
-      FPrevDate := ADate;
-    end;
-
-    smFirstWeek, smNextWeek, smNextWeekRange:
-    begin
-      if (DayOfWeek(ADate) in [Ord(dowSunday), Ord(dowSaturday)]) then
-        exit;
-      if ASelMode = smFirstWeek then
-        FSelDates.Clear;
-      // Collect all weekdays
-      if ASelMode = smNextWeekRange then
-      begin
-        if FPRevDate < ADate then
-        begin
-          d1 := FPrevDate + 7;
-          d2 := ADate;
-        end
-        else
-        begin
-          d1 := ADate;
-          d2 := FPrevDate + 7;
-        end;
-      end
+      // Toggle single selection; the range is not touched
+      if (FSelectedDate <> 0) and (Trunc(FSelectedDate) = Trunc(ADate)) then
+        FSelectedDate := 0
       else
-      begin
-        d1 := ADate;
-        d2 := ADate;
-      end;
-      while DayOfWeek(d1) <> Ord(dowMonday) do d1 := d1 - 1;
-      while DayOfWeek(d2) <> Ord(dowFriday) do d2 := d2 + 1;
-      d := d1;
-      while d <= d2 do
-      begin
-        if not (DayOfWeek(d) in [Ord(dowSunday), Ord(dowSaturday)]) then
-          FSelDates.AddDate(d);
-        d := d + 1;
-      end;
-      FPrevDate := ADate;
+        FSelectedDate := ADate;
     end;
 
-    smFirstRange, smNextRange:
+    smMoveSingle:
+      // Move single selection without toggle (keyboard navigation)
+      FSelectedDate := ADate;
+
+    smExtendRange:
     begin
-      if (ASelMode = smFirstRange) then
-        FSelDates.Clear;
-      if FPrevDate < ADate then
-      begin
-        d1 := FPrevDate + Ord(ASelMode = smNextRange);
-        d2 := ADate;
-      end
-      else
-      begin
-        d1 := ADate;
-        d2 := FPrevDate - Ord(ASelMode = smNextRange);
-      end;
-      d := d1;
-      while (d <= d2) do
-      begin
-        FSelDates.AddDate(d);
-        d := d + 1;
-      end;
+      // Range starts at the shift anchor (established on first shift event)
+      // or, if there is no anchor, at the current single or the clicked cell
+      d1 := FShiftAnchor;
+      if d1 = 0 then d1 := FSelectedDate;
+      if d1 = 0 then d1 := ADate;
+      FillSelectedRange(d1, ADate);
+      // Single follows the last cell of the new range
+      FSelectedDate := ADate;
     end;
   end;
 
@@ -2044,14 +2011,9 @@ begin
   if not Assigned(FCalDrawer) then
     exit;
 
+  // Double-click is meaningful only for the range in multi-select mode
   if not FMultiSelect then
-  begin
-    case FClickButton of
-      mbLeft: FCalDrawer.LeftClick(FClickPoint, FClickShift + [ssDouble]);
-      mbRight: ;
-    end;
     exit;
-  end;
 
   if FClickButton <> mbLeft then
     exit;
@@ -2061,11 +2023,22 @@ begin
   if dt = 0 then
     exit;
 
-  if (FPrevSingleAnchor > 0) and (FPrevSingleAnchor <> dt) then
+  // Undo the single toggle caused by the first click of the double-click
+  FSelectedDate := FPrevSingleAnchor;
+
+  if FSelDates.Count > 0 then
   begin
-    // Extend the previously selected anchor date into a range
-    FPrevDate := FPrevSingleAnchor;
-    ChangeDateTo(dt, smFirstRange);
+    // Range exists: clear it, single stays at its pre-click value
+    FSelDates.Clear;
+    Draw;
+    NotifyRangeSelected;
+  end
+  else
+  begin
+    // No range: create it from single to the double-clicked cell.
+    // Do not reuse a shift anchor - a double-click is not a shift operation
+    FShiftAnchor := 0;
+    ChangeDateTo(dt, smExtendRange);
   end;
 end;
 
@@ -2183,13 +2156,24 @@ end;
 
 function TCalendarLite.IsSelected(ADate: TDate): boolean;
 begin
-  if FMultiSelect then
-    Result := FSelDates.IndexOfDate(ADate) > -1
-  else
-    Result := (ADate = FDate);
+  Result := IsSingleSelected(ADate) or IsInRange(ADate);
+end;
+
+function TCalendarLite.IsSingleSelected(ADate: TDate): boolean;
+begin
+  Result := (FSelectedDate <> 0) and (Trunc(ADate) = Trunc(FSelectedDate));
+end;
+
+function TCalendarLite.IsInRange(ADate: TDate): boolean;
+begin
+  Result := FSelDates.IndexOfDate(ADate) > -1;
 end;
 
 procedure TCalendarLite.KeyDown(var Key: word; Shift: TShiftState);
+var
+  sm: TCalSelMode;
+  baseDate: TDate;
+  newDate: TDate;
 
   function Delta(Increase: boolean): integer;
   begin
@@ -2198,32 +2182,65 @@ procedure TCalendarLite.KeyDown(var Key: word; Shift: TShiftState);
       Result := -1;
   end;
 
-var
-  sm: TCalSelMode;
 begin
-  sm := SelMode(Shift);
+  // Shift extends a range from the shift anchor; otherwise move single
+  if FMultiSelect and (ssShift in Shift) then
+  begin
+    // Establish the shift anchor on the first shift+key press in this sequence
+    if FShiftAnchor = 0 then
+    begin
+      FShiftAnchor := FSelectedDate;
+      if FShiftAnchor = 0 then
+        FShiftAnchor := FDate;
+    end;
+    sm := smExtendRange;
+  end
+  else
+    sm := smMoveSingle;
+
+  baseDate := FDate;
 
   case Key of
-    VK_UP,
-    VK_DOWN: ChangeDateTo(IncWeek(FDate, Delta(Key = VK_DOWN)), sm);
-    VK_LEFT,
-    VK_RIGHT: ChangeDateTo(IncDay(FDate, Delta(Key = VK_RIGHT)), sm);
-    VK_HOME: ChangeDateTo(StartOfTheMonth(FDate), sm);
-    VK_END: ChangeDateTo(EndOfTheMonth(FDate), sm);
-    VK_PRIOR,
-    VK_NEXT: if FMultiSelect then
-        NavigateView(IncMonth(FDate, Delta(Key = VK_NEXT)))
+    VK_UP, VK_DOWN:
+    begin
+      newDate := IncWeek(baseDate, Delta(Key = VK_DOWN));
+      ChangeDateTo(newDate, sm);
+    end;
+    VK_LEFT, VK_RIGHT:
+    begin
+      newDate := IncDay(baseDate, Delta(Key = VK_RIGHT));
+      ChangeDateTo(newDate, sm);
+    end;
+    VK_HOME:
+      ChangeDateTo(StartOfTheMonth(baseDate), sm);
+    VK_END:
+      ChangeDateTo(EndOfTheMonth(baseDate), sm);
+    VK_PRIOR, VK_NEXT:
+    begin
+      if FMultiSelect then
+        NavigateView(IncMonth(baseDate, Delta(Key = VK_NEXT)))
       else if ssCtrl in Shift then
-        Date := IncYear(FDate, Delta(Key = VK_NEXT))
+        Date := IncYear(baseDate, Delta(Key = VK_NEXT))
       else
-        Date := IncMonth(FDate, Delta(Key = VK_NEXT));
+        Date := IncMonth(baseDate, Delta(Key = VK_NEXT));
+    end;
     else
+    begin
       inherited;
       exit;
+    end;
   end;
 
   Key := 0;
   inherited;
+end;
+
+procedure TCalendarLite.KeyUp(var Key: word; Shift: TShiftState);
+begin
+  inherited KeyUp(Key, Shift);
+  // Release of shift ends the current shift-anchored range
+  if (Key = VK_SHIFT) or (Key = VK_LSHIFT) or (Key = VK_RSHIFT) then
+    FShiftAnchor := 0;
 end;
 
 procedure TCalendarLite.MonthChange;
@@ -2236,6 +2253,7 @@ procedure TCalendarLite.MouseDown(Button: TMouseButton; Shift: TShiftState; X, Y
 var
   ev: TCalEventItem;
   dt: TDate;
+  c: TSize;
 begin
   inherited MouseDown(Button, Shift, X, Y);
 
@@ -2248,10 +2266,22 @@ begin
 
   // The second press of a double-click is processed by DblClick
   if ssDouble in Shift then
+  begin
+    FDragging := False;
+    FDragStartDate := 0;
+    FLastDragDate := 0;
+    FAutoScrolling := False;
+    FLastAutoScrollDir := 0;
+    FLastScrollY := 0;
     exit;
+  end;
 
-  // Save the currently selected date so DblClick can extend it into a range
-  FPrevSingleAnchor := FPrevDate;
+  // Save the currently selected date so DblClick can restore it
+  FPrevSingleAnchor := FSelectedDate;
+
+  // A plain click (without shift) ends any active shift-anchored range
+  if not (ssShift in Shift) then
+    FShiftAnchor := 0;
 
   // Handle click on an event square before normal click processing
   if Assigned(FOnEventClick) and (Button = mbLeft) and Assigned(FCalDrawer) then
@@ -2265,18 +2295,47 @@ begin
     end;
   end;
 
-  InternalClick;
+  // Shift+click on a day cell extends the range from the shift anchor.
+  // The anchor is set only once per shift sequence, so subsequent
+  // shift+clicks keep the original starting cell.
+  if FMultiSelect and (Button = mbLeft) and (ssShift in Shift) and Assigned(FCalDrawer) then
+  begin
+    c := FCalDrawer.GetCellAt(FClickPoint);
+    if (c.cy >= FirstDateRow) and (c.cy <= LastDateRow) then
+    begin
+      dt := FCalDrawer.GetDateOfCell(c);
+      if dt > 0 then
+      begin
+        if FShiftAnchor = 0 then
+        begin
+          FShiftAnchor := FSelectedDate;
+          if FShiftAnchor = 0 then
+            FShiftAnchor := dt;
+        end;
+        ChangeDateTo(dt, smExtendRange);
+      end;
+      exit;
+    end;
+  end;
 
-  // Prepare drag-range tracking in multi-select mode
+  // In multi-select mode day-cell clicks are deferred to MouseUp
+  // so that drag can be distinguished from a plain click
   if FMultiSelect and (Button = mbLeft) and Assigned(FCalDrawer) then
   begin
-    FDragStartDate := FCalDrawer.GetDateOfCell(FCalDrawer.GetCellAt(FClickPoint));
-    FLastDragDate := 0;
-    FDragging := False;
-    FAutoScrolling := False;
-    FLastAutoScrollDir := 0;
-    FLastScrollY := 0;
+    c := FCalDrawer.GetCellAt(FClickPoint);
+    if (c.cy >= FirstDateRow) and (c.cy <= LastDateRow) then
+    begin
+      FDragStartDate := FCalDrawer.GetDateOfCell(c);
+      FLastDragDate := 0;
+      FDragging := False;
+      FAutoScrolling := False;
+      FLastAutoScrollDir := 0;
+      FLastScrollY := 0;
+      exit;
+    end;
   end;
+
+  InternalClick;
 end;
 
 procedure TCalendarLite.MouseEnter;
@@ -2357,12 +2416,18 @@ begin
       FAutoScrolling := False;
       FLastAutoScrollDir := 0;
       FLastScrollY := 0;
-      if dt <> FLastDragDate then
+
+      if (dt <> FDragStartDate) or FDragging then
       begin
-        FDragging := True;
-        FLastDragDate := dt;
-        FillSelectedRange(FDragStartDate, dt);
-        Draw;
+        if (dt <> FLastDragDate) or not FDragging then
+        begin
+          FDragging := True;
+          FLastDragDate := dt;
+          FillSelectedRange(FDragStartDate, dt);
+          // Single follows the current drag position
+          FSelectedDate := dt;
+          Draw;
+        end;
       end;
     end
     else
@@ -2424,34 +2489,92 @@ procedure TCalendarLite.MouseUp(Button: TMouseButton; Shift: TShiftState; X, Y: 
 var
   c: TSize;
   dt: TDate;
-  AStart: TDate;
-  AEnd: TDate;
-  tmp: TDate;
+  d1, d2, tmp: TDate;
+  oldMonth: integer;
 begin
   inherited MouseUp(Button, Shift, X, Y);
 
-  if not FDragging or (Button <> mbLeft) then
+  // Release of shift ends the current shift-anchored range
+  if not (ssShift in Shift) then
+    FShiftAnchor := 0;
+
+  // The second release of a double-click - nothing to do
+  if ssDouble in FClickShift then
   begin
     FDragging := False;
     FDragStartDate := 0;
     FLastDragDate := 0;
     FAutoScrolling := False;
+    FLastAutoScrollDir := 0;
     FLastScrollY := 0;
     exit;
   end;
 
-  c := FCalDrawer.GetCellAt(Point(X, Y));
-  dt := FCalDrawer.GetDateOfCell(c);
-  if dt = 0 then
-    dt := FDate;
-
-  AStart := FDragStartDate;
-  AEnd := dt;
-  if AStart > AEnd then
+  // Non-multiselect: day-cell clicks were already handled in MouseDown
+  if not FMultiSelect then
   begin
-    tmp := AStart;
-    AStart := AEnd;
-    AEnd := tmp;
+    FDragging := False;
+    FDragStartDate := 0;
+    FLastDragDate := 0;
+    FAutoScrolling := False;
+    FLastAutoScrollDir := 0;
+    FLastScrollY := 0;
+    exit;
+  end;
+
+  if (Button <> mbLeft) or (FDragStartDate = 0) then
+  begin
+    FDragging := False;
+    FDragStartDate := 0;
+    FLastDragDate := 0;
+    FAutoScrolling := False;
+    FLastAutoScrollDir := 0;
+    FLastScrollY := 0;
+    exit;
+  end;
+
+  if not FDragging then
+  begin
+    // No drag occurred - toggle single selection
+    c := FCalDrawer.GetCellAt(Point(X, Y));
+    dt := FCalDrawer.GetDateOfCell(c);
+    if dt > 0 then
+    begin
+      FPrevSingleAnchor := FSelectedDate;
+      if (FSelectedDate <> 0) and (Trunc(FSelectedDate) = Trunc(dt)) then
+        FSelectedDate := 0
+      else
+        FSelectedDate := dt;
+      oldMonth := MonthOf(FDate);
+      FDate := dt;
+      DateChange;
+      if MonthOf(FDate) <> oldMonth then
+        MonthChange;
+      Draw;
+    end;
+  end
+  else
+  begin
+    // Drag occurred - finalize the range at the release position
+    c := FCalDrawer.GetCellAt(Point(X, Y));
+    dt := FCalDrawer.GetDateOfCell(c);
+    if dt = 0 then
+      dt := FDate;
+
+    d1 := FDragStartDate;
+    d2 := dt;
+    if d1 > d2 then
+    begin
+      tmp := d1;
+      d1 := d2;
+      d2 := tmp;
+    end;
+
+    FillSelectedRange(d1, d2);
+    // Single stays at the drag release position
+    FSelectedDate := dt;
+    NotifyRangeSelected;
+    Draw;
   end;
 
   FDragging := False;
@@ -2460,14 +2583,6 @@ begin
   FAutoScrolling := False;
   FLastAutoScrollDir := 0;
   FLastScrollY := 0;
-
-  FillSelectedRange(AStart, AEnd);
-  FDate := dt;
-  DateChange;
-
-  NotifyRangeSelected;
-
-  Draw;
 end;
 
 procedure TCalendarLite.MonthMenuItemClicked(Sender: TObject);
@@ -2605,8 +2720,16 @@ begin
   Result := (FSelDates.Count > 1);
   if not Result then
   begin
-    AStart := FDate;
-    AEnd := FDate;
+    if FSelectedDate <> 0 then
+    begin
+      AStart := FSelectedDate;
+      AEnd := FSelectedDate;
+    end
+    else
+    begin
+      AStart := FDate;
+      AEnd := FDate;
+    end;
     exit;
   end;
   AStart := FSelDates[0];
@@ -2657,10 +2780,10 @@ begin
   if FDate = dateValue then Exit;
   oldMonth := MonthOf(FDate);
   FDate := dateValue;
-  // View navigation must keep the multi-select range and anchor intact
+  // Direct assignment resets both single and range
   if not FNavigatingView then
   begin
-    FPrevDate := dateValue;
+    FSelectedDate := dateValue;
     FSelDates.Clear;
   end;
   DateChange;
@@ -2823,28 +2946,10 @@ end;
 
 function TCalendarLite.SelMode(Shift: TShiftState): TCalSelMode;
 begin
-  Result := smFirstSingle;
-  if not FMultiSelect then
-    exit;
-
-  if (ssDouble in Shift) then
-  begin
-    Result := smFirstWeek;
-    if (ssCtrl in Shift) and (FPrevDate > 0) then
-      Result := smNextWeek
-    else if (ssShift in Shift) and (FPrevDate > 0) then
-      Result := smNextWeekRange;
-  end
+  if FMultiSelect and (ssShift in Shift) then
+    Result := smExtendRange
   else
-  if (ssShift in Shift) then
-  begin
-    Result := smFirstRange;
-    if (ssCtrl in Shift) and (FPrevDate > 0) then
-      Result := smNextRange;
-  end
-  else
-  if (ssCtrl in Shift) and (FPrevDate > 0) then
-    Result := smNextSingle;
+    Result := smToggleSingle;
 end;
 
 procedure TCalendarLite.SetBiDiMode(AValue: TBiDiMode);
@@ -2858,9 +2963,8 @@ begin
   if AValue = FMultiSelect then
     exit;
   FMultiSelect := AValue;
+  // Switching the mode drops the current range, single is preserved
   FSelDates.Clear;
-  FSelDates.AddDate(FDate);
-  FPrevDate := FDate;
 end;
 
 procedure TCalendarLite.SetParentBiDiMode(AValue: boolean);
@@ -2902,6 +3006,8 @@ begin
   FLastDragDate := 0;
   NavigateView(IncMonth(FDate, ADelta));
   FillSelectedRange(FDragStartDate, FDate);
+  // Single follows the current scroll position
+  FSelectedDate := FDate;
   Draw;
 end;
 
@@ -2921,6 +3027,14 @@ begin
   begin
     d1 := AEnd;
     d2 := AStart;
+  end;
+  // A range must cover at least two days
+  if d1 = d2 then
+  begin
+    if DayOf(d2) < DaysInAMonth(YearOf(d2), MonthOf(d2)) then
+      d2 := d2 + 1
+    else
+      d1 := d1 - 1;
   end;
   d := d1;
   while d <= d2 do
