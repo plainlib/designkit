@@ -8,11 +8,170 @@ All components are installed on the **Common Controls** tab of the component pal
 - **Lazarus** (tested with 4.8) / **Free Pascal Compiler** 3.2.2 or newer.
 - **LCL** – included with Lazarus.
 - **IDEIntf** – included with Lazarus.
-- **[RichMemoPackage](https://github.com/plainlib/richmemo)** – a fork of the original `TRichMemo` component (available in plainlib).
 - **[Helpers](https://github.com/plainlib/helpers)** – common utility units used by the spell‑checker (available in plainlib).
 - **[Toolkit](https://github.com/plainlib/toolkit)** – general‑purpose utility classes (available in plainlib).
-- **[RichKit](https://github.com/plainlib/richkit)** – additional rich‑text utilities (available in plainlib).
 - **Windows 8 or later** is required only for the native `WinSpellChecker` backend. The **HunSpell** backend works on all platforms (Windows, Linux, macOS) and does not need any OS‑specific API.
+
+---
+
+## TCalendarLite Modified (Common Controls ![calendarlite](img/TCalendarLite.png))
+
+![sample_calendar](img/sample_calendar.png)
+
+`TCalendarLite` is a lightweight, resizable calendar component - a
+`TGraphicControl` descendant, so it has no native counterpart and
+behaves identically on Windows, Linux, and macOS. It is used in DesignKit
+as a drop-in replacement for the original Lazarus CCR calendar, extended
+with independent single/range selection, per-day events, mouse-wheel
+month navigation, and full localization.
+
+The component draws a standard month grid with a header (month/year
+caption, navigation arrows), a row of weekday names, the six date rows,
+and an optional "today" footer row that shows the current day and the
+currently selected range.
+
+### Selection
+
+Single and range selections are kept separately and do not interfere
+with each other. The rules are:
+
+- **Single click** on a day toggles its single selection. Clicking the
+  selected day again clears it. The range (if any) is left untouched.
+- **Shift+click** builds a new range from the current single selection
+  to the clicked cell. The anchor is fixed for the whole Shift-held
+  sequence, so subsequent Shift+clicks keep extending from the original
+  cell. Single selection jumps to the end of the range.
+- **Drag** (press and move the mouse) builds a new range from the press
+  cell to the release cell. While dragging, the single selection
+  follows the mouse. Releasing on the same cell as the press does not
+  create a range - it falls back to a plain single toggle.
+- **Double-click** on the same cell: if a range exists, it is cleared;
+  if not, a range is built from the single selection to the clicked
+  cell (or just sets the single selection if nothing was selected).
+  Rapid double-clicks that hit *different* cells are treated as two
+  plain clicks, which guards against false double-clicks after view
+  navigation.
+- **Arrow keys** move the single selection; **Shift+arrow** extends
+  the range from the current anchor.
+- A range always contains at least two days; attempting to narrow it
+  to one cell simply removes the range.
+- **Mouse wheel** scrolls the view to the previous/next month without
+  touching the current selection. The scroll rate is throttled so the
+  grid moves at a comfortable pace.
+
+### Events
+
+Each day can carry any number of user events. An event is a date, a
+caption, and a colour; events are displayed as small coloured squares
+under the day number and can be clicked individually.
+
+```pascal
+Calendar.Events.Add(Now, 'Pay bills', clRed);
+```
+
+### Colors
+
+All drawing colours are exposed through the `Colors: TCalColors`
+sub-property. The most relevant entries are `SelectedDateColor` (single
+selection), `SelectedRangeColor` (range), `TodayFrameColor`, and
+`EventFocusColor` (hovered event square).
+
+### Localization
+
+The `Languages` property switches day names, month names, and format
+strings between the built-in languages (`lgEnglish`, `lgFrench`,
+`lgGerman`, `lgHebrew`, `lgSpanish`, `lgItalian`, `lgPolish`,
+`lgFinnish`, `lgGreek`, `lgRussian`). Use `lgCustom` together with
+`DayNames`, `MonthNames`, and `DisplayTexts` to supply your own.
+
+### Key Properties
+
+| Property              | Default       | Description |
+|-----------------------|---------------|-------------|
+| `Date`                | `Now`         | Currently focused date. |
+| `MultiSelect`         | `False`       | Enables multi-select mode (range, Shift/drag, etc.). |
+| `Languages`           | `lgEnglish`   | Built-in localization preset. |
+| `Options`             | see code      | Set of `TCalOption` flags: today frame/row, weekends, holidays, borders, etc. |
+| `Colors`              | see code      | All drawing colours (see `TCalColors`). |
+| `Events`              | empty         | User event list (`TCalEventList`). |
+| `StartingDayOfWeek`   | `dowSunday`   | First column of the week. |
+| `WeekendDays`         | `[dowSunday]` | Days rendered with the weekend colour. |
+| `ButtonWidth` / `ButtonHeight` | `0`   | Arrow button sizes (0 = auto). |
+| `EventSquareSize`     | `6`           | Side length of the event marker square. |
+| `EventSquareBottom`   | `5`           | Bottom margin for event markers. |
+| `DayNames`, `MonthNames`, `DisplayTexts` | empty | Custom strings used with `lgCustom`. |
+
+### Key Events
+
+| Event                | Description |
+|----------------------|-------------|
+| `OnDateChange`       | Fired when the focused date changes. |
+| `OnMonthChange`      | Fired when the focused month changes (view navigation). |
+| `OnRangeSelected`    | Fired when a multi-day range is created or cleared. |
+| `OnEventClick`       | Fired when a user event square is clicked. |
+| `OnGetHolidays`      | Supply per-month holidays as a bit mask. |
+| `OnGetDayText`       | Override the day-number caption. |
+| `OnPrepareCanvas`    | Adjust the canvas per cell before drawing. |
+| `OnDrawCell`         | Fully custom-draw a day cell. |
+| `OnHint`             | Provide a hint for a day under the mouse. |
+
+### Notes on this fork
+
+The component originates from the Lazarus CCR (Community Components
+Repository) and is bundled with DesignKit in a modified form. All
+DesignKit-specific changes (independent single/range selection, events,
+mouse-wheel navigation, localization presets, colour extensions, and
+the today-row range display) are tracked in the project git history:
+<https://github.com/plainlib/designkit>. The original license and
+authorship are preserved below.
+
+### TCalendarLite license
+
+`TCalendarLite` is free software distributed under the **GNU Library
+General Public License, version 2 or later**, with a special linking
+exception that permits linking it with independent modules. The original
+license notice from the component's source header is reproduced below as
+required by its terms:
+
+{ TCalendarLite is a lightweight calendar component, a TGraphiccontrol
+  descendant, which is consequently not dependent on any widgetset.
+  It is not a fixed-size component, as are most calendars, but will align
+  and resize as needed
+
+  Originator    : H Page-Clark, 2013/2016
+  Contributions : Ariel Rodriguez, 2013
+                  Werner Pamler, 2013/2016
+                  John Greetham, 2016
+
+  This library is free software; you can redistribute it and/or modify it
+  under the terms of the GNU Library General Public License as published by
+  the Free Software Foundation; either version 2 of the License, or (at your
+  option) any later version with the following modification:
+
+  As a special exception, the copyright holders of this library give you
+  permission to link this library with independent modules to produce an
+  executable, regardless of the license terms of these independent modules,and
+  to copy and distribute the resulting executable under terms of your choice,
+  provided that you also meet, for each linked independent module, the terms
+  and conditions of the license of that module. An independent module is a
+  module which is not derived from or based on this library. If you modify
+  this library, you may extend this exception to your version of the library,
+  but you are not obligated to do so. If you do not wish to do so, delete this
+  exception statement from your version.
+
+  This program is distributed in the hope that it will be useful, but WITHOUT
+  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+  FITNESS FOR A PARTICULAR PURPOSE. See the GNU Library General Public License
+  for more details.
+
+  You should have received a copy of the GNU Library General Public License
+  along with this library; if not, write to the Free Software Foundation,
+  Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+
+  Modified by Alexander Tverskoy (plaintool), 2026.
+  All changes are tracked in the project git history:
+  https://github.com/plainlib/designkit
+}
 
 ---
 
@@ -149,96 +308,6 @@ begin
   Btn.TooltipDuration := 3000;
   Btn.OffsetY := 2; // move text slightly down
 end;
-```
-
----
-
-## TCalendarLite (Misc ![calendarlite](img/TCalendarLite.png))
-
-`TCalendarLite` is a lightweight calendar component, a `TGraphicControl`
-descendant, which is consequently not dependent on any widgetset. Unlike
-most calendars, it is not a fixed-size component; it aligns and resizes
-as needed.
-
-The component displays a standard month grid with a header for the month
-and year, navigation arrows for switching between months, and a row of
-week-day names. It can optionally show the adjacent days of the previous
-and next months. Selection is controlled by the `MultiSelect` property
-and the `DateTime` / `SelectedDates` members, and the visual style can be
-adjusted through `Colors`, `WeekEndColor`, `ShowWeekNumbers`, and
-`ShowToday`.
-
-Features relevant to DesignKit users:
-
-- **Range selection:** set `MultiSelect := True` and use Shift+click to
-  highlight a range of days, or Ctrl+click to select non-contiguous days.
-- **Any widgetset:** being a `TGraphicControl`, it has no native
-  counterpart and behaves identically on Windows, Linux, and macOS.
-- **Resizable:** it is not fixed-size and follows the LCL `Align`
-  property.
-
-### Key Properties
-
-| Property           | Default            | Description |
-|--------------------|--------------------|-------------|
-| `DateTime`         | `Now`              | Currently focused date. |
-| `MultiSelect`      | `False`            | Enables selection of multiple days (range or non-contiguous). |
-| `SelectedDates`    | empty              | List of selected dates when `MultiSelect` is enabled. |
-| `MinDate`, `MaxDate` | `0` (unbounded)  | Limits the selectable range of days. |
-| `ShowWeekNumbers`  | `False`            | Displays the ISO week numbers column. |
-| `ShowToday`        | `False`            | Draws a highlight around the current day. |
-| `WeekEndColor`     | `clRed`            | Colour used for Saturday and Sunday captions. |
-| `Date`             | `Date`             | Gets or sets the selected date (single-selection mode). |
-
-`TCalendarLite` is a **third-party component** from the Lazarus CCR
-(Community Components Repository) and is bundled with DesignKit as a
-convenience. It is maintained independently of this package; please
-report component-specific bugs to the upstream CalLite project.
-
-### TCalendarLite license
-
-`TCalendarLite` is free software distributed under the **GNU Library
-General Public License, version 2 or later**, with a special linking
-exception that permits linking it with independent modules. The original
-license notice from the component's source header is reproduced below as
-required by its terms:
-
-```text
-{ TCalendarLite is a lightweight calendar component, a TGraphiccontrol
-  descendant, which is consequently not dependent on any widgetset.
-  It is not a fixed-size component, as are most calendars, but will align
-  and resize as needed
-
-  Originator    : H Page-Clark, 2013/2016
-  Contributions : Ariel Rodriguez, 2013
-                  Werner Pamler, 2013/2016
-                  John Greetham, 2016
-
-  This library is free software; you can redistribute it and/or modify it
-  under the terms of the GNU Library General Public License as published by
-  the Free Software Foundation; either version 2 of the License, or (at your
-  option) any later version with the following modification:
-
-  As a special exception, the copyright holders of this library give you
-  permission to link this library with independent modules to produce an
-  executable, regardless of the license terms of these independent modules,and
-  to copy and distribute the resulting executable under terms of your choice,
-  provided that you also meet, for each linked independent module, the terms
-  and conditions of the license of that module. An independent module is a
-  module which is not derived from or based on this library. If you modify
-  this library, you may extend this exception to your version of the library,
-  but you are not obligated to do so. If you do not wish to do so, delete this
-  exception statement from your version.
-
-  This program is distributed in the hope that it will be useful, but WITHOUT
-  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
-  FITNESS FOR A PARTICULAR PURPOSE. See the GNU Library General Public License
-  for more details.
-
-  You should have received a copy of the GNU Library General Public License
-  along with this library; if not, write to the Free Software Foundation,
-  Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
-}
 ```
 
 ---

@@ -74,16 +74,10 @@ SOFTWARE."/>
         <PackageName Value="IDEIntf"/>
       </Item>
       <Item>
-        <PackageName Value="richmemopackage"/>
-      </Item>
-      <Item>
         <PackageName Value="helpers"/>
       </Item>
       <Item>
         <PackageName Value="toolkit"/>
-      </Item>
-      <Item>
-        <PackageName Value="richkit"/>
       </Item>
     </RequiredPkgs>
     <UsageOptions>
