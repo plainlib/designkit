@@ -293,6 +293,7 @@ type
     FPrevEvent: TCalEventItem;
     FPrevMouseDate: TDate;
     FPrevSingleAnchor: TDate;
+    FPrevClickDate: TDate;
     FShiftAnchor: TDate;
     FDragStartDate: TDate;
     FLastDragDate: TDate;
@@ -317,6 +318,7 @@ type
     FEventSquareGap: integer;
     FEventSquareBottom: integer;
     FEventTextGap: integer;
+    FLastWheelTick: QWord;
     function GetDayNames: string;
     function GetDisplayText(aTextIndex: TDisplayText): string;
     function GetDisplayTexts: string;
@@ -368,6 +370,9 @@ type
     procedure MouseLeave; override;
     procedure MouseMove(Shift: TShiftState; X, Y: integer); override;
     procedure MouseUp(Button: TMouseButton; Shift: TShiftState; X, Y: integer); override;
+    function DoMouseWheelDown(Shift: TShiftState; MousePos: TPoint): boolean; override;
+    function DoMouseWheelUp(Shift: TShiftState; MousePos: TPoint): boolean; override;
+    function WheelThrottleAllows: boolean;
     function SelMode(Shift: TShiftState): TCalSelMode;
     procedure SetBiDiMode(AValue: TBiDiMode); override;
     procedure SetParentBiDiMode(AValue: boolean); override;
@@ -594,6 +599,7 @@ const
 
   DBLCLICK_INTERVAL = 300;   // Interval (ms) for detection of a double-click
   AUTOSCROLL_STEP = 25;      // Pixels past the last scroll Y to trigger another month
+  WHEEL_THROTTLE_MS = 120;   // Minimum interval between mouse-wheel month scrolls (ms)
 
 function SameRect(const R1, R2: TRect): boolean;
 begin
@@ -1924,7 +1930,9 @@ begin
   FOptions := [coShowTodayFrame, coBoldHolidays, coShowWeekend, coShowHolidays, coShowTodayRow, coShowDayNames, coShowTopRow];
   SetLanguage(lgEnglish);
   FPrevMouseDate := 0;
+  FPrevClickDate := 0;
   FShiftAnchor := 0;
+  FLastWheelTick := 0;
   Date := SysUtils.Date;
 end;
 
@@ -2005,13 +2013,14 @@ procedure TCalendarLite.DblClick;
 var
   c: TSize;
   dt: TDate;
+  hadSingle: boolean;
 begin
   inherited;
 
   if not Assigned(FCalDrawer) then
     exit;
 
-  // Double-click is meaningful only for the range in multi-select mode
+  // In single-select mode the first click already handled the selection
   if not FMultiSelect then
     exit;
 
@@ -2023,6 +2032,27 @@ begin
   if dt = 0 then
     exit;
 
+  // The OS may report a double-click even when two rapid clicks hit
+  // different cells (e.g., after navigating via a trailing day of the
+  // next month: the same screen position maps to a different date).
+  // Treat that as a plain single click on the target cell - the first
+  // click was already processed in MouseUp, so just toggle here.
+  if FPrevClickDate <> dt then
+  begin
+    if (FSelectedDate <> 0) and (Trunc(FSelectedDate) = Trunc(dt)) then
+      FSelectedDate := 0
+    else
+      FSelectedDate := dt;
+    FDate := dt;
+    FShiftAnchor := 0;
+    DateChange;
+    Draw;
+    exit;
+  end;
+
+  // Was there a single selection before this double-click?
+  hadSingle := (FPrevSingleAnchor <> 0);
+
   // Undo the single toggle caused by the first click of the double-click
   FSelectedDate := FPrevSingleAnchor;
 
@@ -2033,12 +2063,19 @@ begin
     Draw;
     NotifyRangeSelected;
   end
-  else
+  else if hadSingle then
   begin
-    // No range: create it from single to the double-clicked cell.
+    // Single existed: create a range from single to the double-clicked cell.
     // Do not reuse a shift anchor - a double-click is not a shift operation
     FShiftAnchor := 0;
     ChangeDateTo(dt, smExtendRange);
+  end
+  else
+  begin
+    // Nothing was selected before: behave like a regular single click
+    FShiftAnchor := 0;
+    FSelectedDate := dt;
+    Draw;
   end;
 end;
 
@@ -2279,6 +2316,13 @@ begin
   // Save the currently selected date so DblClick can restore it
   FPrevSingleAnchor := FSelectedDate;
 
+  // Remember the logical date of this click so DblClick can reject
+  // false double-clicks caused by view navigation between clicks
+  if Assigned(FCalDrawer) then
+    FPrevClickDate := FCalDrawer.GetDateOfCell(FCalDrawer.GetCellAt(FClickPoint))
+  else
+    FPrevClickDate := 0;
+
   // A plain click (without shift) ends any active shift-anchored range
   if not (ssShift in Shift) then
     FShiftAnchor := 0;
@@ -2356,8 +2400,6 @@ procedure TCalendarLite.MouseMove(Shift: TShiftState; X, Y: integer);
 var
   c: TSize;
   dt: TDate;
-  FirstDayOfView: TDate;
-  LastDayOfView: TDate;
   InBounds: boolean;
   ev: TCalEventItem;
   TopOfGrid, BottomOfGrid: integer;
@@ -2371,16 +2413,19 @@ begin
     dt := FCalDrawer.GetDateOfCell(c);
     InBounds := (Y >= 0) and (Y < Height);
 
-    FirstDayOfView := EncodeDate(FCalDrawer.FThisYear, FCalDrawer.FThisMonth, 1);
-    LastDayOfView := EndOfTheMonth(FirstDayOfView);
-
     // Get the vertical boundaries of the date grid
     TopOfGrid := FCalDrawer.GetRowRect(FirstDateRow).Top;
     BottomOfGrid := FCalDrawer.GetRowRect(LastDateRow).Bottom;
 
-    if InBounds and ((Y < TopOfGrid) or ((dt > 0) and (dt < FirstDayOfView))) then
+    // Auto-scroll only when the pointer is physically outside the date grid.
+    // Leading/trailing days are still inside the grid, so a plain click on
+    // them (with slight mouse jitter) must not trigger a month change here:
+    // otherwise the view would jump into the middle of the neighbouring
+    // month and build a large unintended range. Navigation for those days
+    // is handled by MouseUp instead.
+    if InBounds and (Y < TopOfGrid) then
     begin
-      // Pointer above the date grid or over leading days of the previous month; scroll back
+      // Pointer above the date grid; scroll back
       if not FAutoScrolling or (FLastAutoScrollDir <> -1) then
       begin
         FAutoScrolling := True;
@@ -2394,9 +2439,9 @@ begin
         AutoScrollTo(-1);
       end;
     end
-    else if InBounds and ((Y > BottomOfGrid) or ((dt > 0) and (dt > LastDayOfView))) then
+    else if InBounds and (Y > BottomOfGrid) then
     begin
-      // Pointer below the date grid or over trailing days of the next month; scroll forward
+      // Pointer below the date grid; scroll forward
       if not FAutoScrolling or (FLastAutoScrollDir <> +1) then
       begin
         FAutoScrolling := True;
@@ -2412,7 +2457,7 @@ begin
     end
     else if InBounds and (dt > 0) then
     begin
-      // Pointer inside the current month; extend the range
+      // Pointer inside the date grid; extend the range normally
       FAutoScrolling := False;
       FLastAutoScrollDir := 0;
       FLastScrollY := 0;
@@ -2583,6 +2628,83 @@ begin
   FAutoScrolling := False;
   FLastAutoScrollDir := 0;
   FLastScrollY := 0;
+end;
+
+function TCalendarLite.WheelThrottleAllows: boolean;
+var
+  NowTick: QWord;
+begin
+  // Throttle wheel events so the calendar scrolls at a gentle pace
+  NowTick := GetTickCount64;
+  Result := (FLastWheelTick = 0) or (NowTick - FLastWheelTick >= WHEEL_THROTTLE_MS);
+  if Result then
+    FLastWheelTick := NowTick;
+end;
+
+function TCalendarLite.DoMouseWheelDown(Shift: TShiftState; MousePos: TPoint): boolean;
+var
+  c: TSize;
+  dt: TDate;
+begin
+  // A user-assigned handler takes precedence
+  Result := inherited DoMouseWheelDown(Shift, MousePos);
+  if Result then
+    exit;
+
+  if WheelThrottleAllows then
+  begin
+    // NavigateView keeps both the single selection and the range
+    NavigateView(IncMonth(FDate, +1));
+    // During an active drag, extend the range to the cell under the mouse
+    // so the selection follows the wheel navigation without a mouse move
+    if FMultiSelect and (FDragStartDate > 0) and Assigned(FCalDrawer) then
+    begin
+      c := FCalDrawer.GetCellAt(MousePos);
+      dt := FCalDrawer.GetDateOfCell(c);
+      if dt > 0 then
+      begin
+        FDragging := True;
+        FLastDragDate := dt;
+        FillSelectedRange(FDragStartDate, dt);
+        FSelectedDate := dt;
+        Draw;
+      end;
+    end;
+    Result := True;
+  end;
+end;
+
+function TCalendarLite.DoMouseWheelUp(Shift: TShiftState; MousePos: TPoint): boolean;
+var
+  c: TSize;
+  dt: TDate;
+begin
+  // A user-assigned handler takes precedence
+  Result := inherited DoMouseWheelUp(Shift, MousePos);
+  if Result then
+    exit;
+
+  if WheelThrottleAllows then
+  begin
+    // NavigateView keeps both the single selection and the range
+    NavigateView(IncMonth(FDate, -1));
+    // During an active drag, extend the range to the cell under the mouse
+    // so the selection follows the wheel navigation without a mouse move
+    if FMultiSelect and (FDragStartDate > 0) and Assigned(FCalDrawer) then
+    begin
+      c := FCalDrawer.GetCellAt(MousePos);
+      dt := FCalDrawer.GetDateOfCell(c);
+      if dt > 0 then
+      begin
+        FDragging := True;
+        FLastDragDate := dt;
+        FillSelectedRange(FDragStartDate, dt);
+        FSelectedDate := dt;
+        Draw;
+      end;
+    end;
+    Result := True;
+  end;
 end;
 
 procedure TCalendarLite.MonthMenuItemClicked(Sender: TObject);
@@ -3028,14 +3150,11 @@ begin
     d1 := AEnd;
     d2 := AStart;
   end;
-  // A range must cover at least two days
-  if d1 = d2 then
-  begin
-    if DayOf(d2) < DaysInAMonth(YearOf(d2), MonthOf(d2)) then
-      d2 := d2 + 1
-    else
-      d1 := d1 - 1;
-  end;
+  // A range needs at least two distinct days; a single-cell range
+  // simply does not exist (important when the user narrows a drag
+  // selection down to one cell - the range must disappear, not stick)
+  if Trunc(d1) = Trunc(d2) then
+    exit;
   d := d1;
   while d <= d2 do
   begin
