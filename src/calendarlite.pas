@@ -56,7 +56,7 @@ const
   LastCol = 7;
 
 type
-  TCalendarLite = class;
+  TCustomCalendarLite = class;
 
   TColArray = array[1..LastCol] of word;
   TRowArray = array of word;
@@ -133,13 +133,13 @@ type
   { Container for user events }
   TCalEventList = class(TOwnedCollection)
   private
-    FOwner: TCalendarLite;
+    FOwner: TCustomCalendarLite;
     function GetEventItem(AIndex: integer): TCalEventItem;
     procedure SetEventItem(AIndex: integer; AValue: TCalEventItem);
   protected
     procedure Notify(Item: TCollectionItem; Action: TCollectionNotification); override;
   public
-    constructor Create(AOwner: TCalendarLite);
+    constructor Create(AOwner: TCustomCalendarLite);
     function Add(ADate: TDate; const AName: string; AColor: TColor = clSkyBlue): TCalEventItem; overload;
     procedure Changed;
     procedure DeleteForDate(ADate: TDate);
@@ -187,7 +187,7 @@ type
     FCellSize: TSize;
     FColPositions: TColArray;
     FEventRects: TEventRectArray;
-    FOwner: TCalendarLite;
+    FOwner: TCustomCalendarLite;
     FRangeRect: TRect;
     FRowPositions: TRowArray;
     FLastRow: integer;
@@ -225,7 +225,7 @@ type
     procedure RightClick;
     procedure SetBoundsRect(ARect: TRect);
   public
-    constructor Create(AOwner: TCalendarLite);
+    constructor Create(AOwner: TCustomCalendarLite);
     destructor Destroy; override;
     procedure Draw;
     function GetRowRect(ARow: integer): TRect;
@@ -240,12 +240,12 @@ type
 
   TCalColors = class(TPersistent)
   private
-    FOwner: TCalendarLite;
+    FOwner: TCustomCalendarLite;
     FColors: array[0..14] of TColor;
     function GetColor(AIndex: integer): TColor;
     procedure SetColor(AIndex: integer; AValue: TColor);
   public
-    constructor Create(AOwner: TCalendarLite);
+    constructor Create(AOwner: TCustomCalendarLite);
   published
     property ArrowBorderColor: TColor index 0 read GetColor write SetColor default clSilver;
     property ArrowColor: TColor index 1 read GetColor write SetColor default clSilver;
@@ -264,9 +264,9 @@ type
     property SelectedRangeColor: TColor index 14 read GetColor write SetColor default clSkyBlue;
   end;
 
-  { TCalendarLite }
+  { TCustomCalendarLite }
 
-  TCalendarLite = class(TCustomControl)
+  TCustomCalendarLite = class(TCustomControl)
   private
     FBufferValid: boolean;
     FCalDrawer: TCalDrawer;
@@ -288,6 +288,8 @@ type
     FOnPrepareCanvas: TCalPrepareCanvasEvent;
     FOptions: TCalOptions;
     FPopupMenu: TPopupMenu;
+    FDateFormat: string;
+    FEventDateFormat: string;
     FStartingDayOfWeek: TDayOfWeek;
     FWeekendDays: TDaysOfWeek;
     FPrevEvent: TCalEventItem;
@@ -323,6 +325,8 @@ type
     function GetDisplayText(aTextIndex: TDisplayText): string;
     function GetDisplayTexts: string;
     function GetMonthNames: string;
+    procedure SetDateFormat(const AValue: string);
+    procedure SetEventDateFormat(const AValue: string);
     procedure HolidayMenuItemClicked(Sender: TObject);
     procedure MonthMenuItemClicked(Sender: TObject);
     procedure PopulateHolidayPopupMenu;
@@ -351,7 +355,6 @@ type
     procedure NotifyRangeSelected;
     procedure TimerExpired(Sender: TObject);
     procedure YearMenuItemClicked(Sender: TObject);
-
   protected
     procedure ChangeDateTo(ADate: TDate; ASelMode: TCalSelMode);
     procedure DateChange; virtual;
@@ -396,6 +399,9 @@ type
 
     function GetDayName(ADayOfWeek: TDayOfWeek): string;
     function GetMonthName(AMonth: integer): string;
+    function GetDateFormat: string;
+    function GetDateFormatLong: string;
+    function GetEventDateFormat(ADateTime: TDateTime): string;
 
     procedure AddSelectedDate(ADate: TDate);
     procedure ClearSelectedDates;
@@ -406,56 +412,13 @@ type
     function SelectionRange(out AStart, AEnd: TDate): boolean;
     function SelectedDates: TCalDateArray;
 
-  published
-    property Align;
-    property Anchors;
-    property BiDiMode;
-    property BorderSpacing;
-    property Constraints;
-    property Cursor;
-    property Font;
-    property Height;
-    property HelpContext;
-    property HelpKeyword;
-    property HelpType;
-    property Hint;
-    property Left;
-    property Name;
-    property ParentBiDiMode;
-    property ParentColor;
-    property ParentFont;
-    property PopupMenu;
-    property ParentShowHint;
-    property ShowHint;
-    property TabOrder;
-    property TabStop;
-    property Tag;
-    property Top;
-    property Visible;
-    property Width;
-    property OnChangeBounds;
-    property OnClick;
-    property OnContextPopup;
-    property OnDblClick;
-    property OnEnter;
-    property OnExit;
-    property OnKeyDown;
-    property OnKeyPress;
-    property OnKeyUp;
-    property OnMouseDown;
-    property OnMouseEnter;
-    property OnMouseLeave;
-    property OnMouseMove;
-    property OnMouseUp;
-    property OnMouseWheel;
-    property OnMouseWheelDown;
-    property OnMouseWheelUp;
-
-    // new properties
+    // properties (moved from published)
     property ButtonWidth: integer read FButtonWidth write SetButtonWidth default 0;
     property ButtonHeight: integer read FButtonHeight write SetButtonHeight default 0;
     property Colors: TCalColors read FColors write FColors;
     property Date: TDateTime read FDate write SetDate;
+    property DateFormat: string read FDateFormat write SetDateFormat;
+    property EventDateFormat: string read FEventDateFormat write SetEventDateFormat;
     property DayNames: string read FCustomDayNames write SetCustomDayNames;
     property DisplayTexts: string read GetDisplayTexts write SetCustomDisplayTexts;
     property Events: TCalEventList read FEvents write FEvents;
@@ -466,12 +429,8 @@ type
     property StartingDayOfWeek: TDayOfWeek read FStartingDayOfWeek write SetStartingDayOfWeek default dowSunday;
     property WeekendDays: TDaysOfWeek read FWeekendDays write SetWeekendDays default [dowSunday];
     property Languages: TLanguage read FLanguage write SetLanguage default lgEnglish;
-
-    // event square dimensions and spacing
     property EventSquareSize: integer read FEventSquareSize write SetEventSquareSize default 6;
     property EventSquareBottom: integer read FEventSquareBottom write SetEventSquareBottom default 5;
-
-    // new event properties
     property OnDateChange: TNotifyEvent read FOnDateChange write FOnDateChange;
     property OnDrawCell: TCalDrawCellEvent read FOnDrawCell write FOnDrawCell;
     property OnEventClick: TCalEventClickEvent read FOnEventClick write FOnEventClick;
@@ -481,6 +440,152 @@ type
     property OnMonthChange: TNotifyEvent read FOnMonthChange write FOnMonthChange;
     property OnPrepareCanvas: TCalPrepareCanvasEvent read FOnPrepareCanvas write FOnPrepareCanvas;
     property OnRangeSelected: TCalRangeEvent read FOnRangeSelected write FOnRangeSelected;
+  end;
+
+  { TCalendarLite }
+
+  TCalendarLite = class(TCustomCalendarLite)
+  published
+    // Aligns the control within its parent
+    property Align;
+    // Anchors relative to the parent's edges
+    property Anchors;
+    // Bidirectional text mode for right-to-left languages
+    property BiDiMode;
+    // External spacing around the control
+    property BorderSpacing;
+    // Min/max size constraints
+    property Constraints;
+    // Mouse cursor when hovering over the control
+    property Cursor;
+    // Font used for drawing day numbers and captions
+    property Font;
+    // Control height in pixels
+    property Height;
+    // Help context ID for F1
+    property HelpContext;
+    // Help keyword for F1
+    property HelpKeyword;
+    // Whether HelpContext or HelpKeyword is used
+    property HelpType;
+    // Tooltip text shown on hover
+    property Hint;
+    // Left position in parent coordinates
+    property Left;
+    // Component name (used in code)
+    property Name;
+    // Inherit BiDiMode from parent
+    property ParentBiDiMode;
+    // Inherit background color from parent
+    property ParentColor;
+    // Inherit font from parent
+    property ParentFont;
+    // Context menu shown on right-click
+    property PopupMenu;
+    // Inherit ShowHint from parent
+    property ParentShowHint;
+    // Enables tooltip display
+    property ShowHint;
+    // Tab order within the parent
+    property TabOrder;
+    // Whether the control can receive focus via Tab
+    property TabStop;
+    // Free integer for user data
+    property Tag;
+    // Top position in parent coordinates
+    property Top;
+    // Whether the control is visible
+    property Visible;
+    // Control width in pixels
+    property Width;
+    // Fired when position or size changes
+    property OnChangeBounds;
+    // Fired on mouse click
+    property OnClick;
+    // Fired on context menu request
+    property OnContextPopup;
+    // Fired on double-click
+    property OnDblClick;
+    // Fired when the control receives focus
+    property OnEnter;
+    // Fired when the control loses focus
+    property OnExit;
+    // Fired when a key is pressed down
+    property OnKeyDown;
+    // Fired when a character key is pressed
+    property OnKeyPress;
+    // Fired when a key is released
+    property OnKeyUp;
+    // Fired when a mouse button is pressed
+    property OnMouseDown;
+    // Fired when the mouse enters the control
+    property OnMouseEnter;
+    // Fired when the mouse leaves the control
+    property OnMouseLeave;
+    // Fired on mouse movement over the control
+    property OnMouseMove;
+    // Fired when a mouse button is released
+    property OnMouseUp;
+    // Fired on mouse wheel scroll
+    property OnMouseWheel;
+    // Fired on wheel scroll down
+    property OnMouseWheelDown;
+    // Fired on wheel scroll up
+    property OnMouseWheelUp;
+    // Arrow button width (0 = auto)
+    property ButtonWidth;
+    // Arrow button height (0 = auto)
+    property ButtonHeight;
+    // All drawing colors (see TCalColors)
+    property Colors;
+    // Currently focused date
+    property Date;
+    // Custom date display format (empty = language preset)
+    property DateFormat;
+    // Custom date/time format for event hints
+    property EventDateFormat;
+    // Custom day names used with lgCustom
+    property DayNames;
+    // Custom display strings used with lgCustom
+    property DisplayTexts;
+    // User events list (TCalEventList)
+    property Events;
+    // Custom month names used with lgCustom
+    property MonthNames;
+    // Enables multi-day selection mode
+    property MultiSelect;
+    // Display option flags (TCalOptions set)
+    property Options;
+    // First day of the week column
+    property StartingDayOfWeek;
+    // Days drawn with the weekend color
+    property WeekendDays;
+    // Language preset for names and formats
+    property Languages;
+
+    // Side length of event marker square
+    property EventSquareSize;
+    // Bottom margin for event markers
+    property EventSquareBottom;
+
+    // Fired when the focused date changes
+    property OnDateChange;
+    // Custom drawing for a day cell
+    property OnDrawCell;
+    // Fired when an event square is clicked
+    property OnEventClick;
+    // Override the day number caption
+    property OnGetDayText;
+    // Supply holidays for a month
+    property OnGetHolidays;
+    // Provide hint text for a day under the mouse
+    property OnHint;
+    // Fired when the view month changes
+    property OnMonthChange;
+    // Adjust canvas per cell before drawing
+    property OnPrepareCanvas;
+    // Fired when a range is created or cleared
+    property OnRangeSelected;
   end;
 
 procedure ClearHolidays(var AHolidays: THolidays);
@@ -646,7 +751,7 @@ end;
 
 procedure TCalEventItem.SetDate(AValue: TDateTime);
 begin
-  AValue := Trunc(AValue);
+  // Keep the time component: events are bound to date and time
   if FDate = AValue then exit;
   FDate := AValue;
   if Collection is TCalEventList then
@@ -663,14 +768,18 @@ end;
 
 function TCalEventItem.GetDisplayName: string;
 begin
-  Result := FormatDateTime('yyyy-mm-dd', FDate);
+  // Include the time only when it is set
+  if Trunc(FDate) = FDate then
+    Result := FormatDateTime('yyyy-mm-dd', FDate)
+  else
+    Result := FormatDateTime('yyyy-mm-dd hh:nn', FDate);
   if FName <> '' then
     Result := Result + ' ' + FName;
 end;
 
 { TCalEventList }
 
-constructor TCalEventList.Create(AOwner: TCalendarLite);
+constructor TCalEventList.Create(AOwner: TCustomCalendarLite);
 begin
   inherited Create(AOwner, TCalEventItem);
   FOwner := AOwner;
@@ -720,8 +829,8 @@ end;
 
 function TCalEventList.EventsOn(ADate: TDate): TCalEventArray;
 var
-  i, ACount: integer;
-  ev: TCalEventItem;
+  i, j, ACount: integer;
+  ev, tmpEv: TCalEventItem;
   truncatedDate: TDate;
 begin
   Result := nil;
@@ -730,13 +839,24 @@ begin
   for i := 0 to Count - 1 do
   begin
     ev := Items[i];
-    if ev.Date = truncatedDate then
+    // Events carry date and time, so compare only the date part
+    if Trunc(ev.Date) = truncatedDate then
     begin
       SetLength(Result, ACount + 1);
       Result[ACount] := ev;
       Inc(ACount);
     end;
   end;
+
+  // Sort by time so event squares are drawn in chronological order
+  for i := 0 to ACount - 2 do
+    for j := i + 1 to ACount - 1 do
+      if Result[i].Date > Result[j].Date then
+      begin
+        tmpEv := Result[i];
+        Result[i] := Result[j];
+        Result[j] := tmpEv;
+      end;
 end;
 
 { TCalSortedDateList }
@@ -901,7 +1021,7 @@ end;
 
 { TCalDrawer }
 
-constructor TCalDrawer.Create(AOwner: TCalendarLite);
+constructor TCalDrawer.Create(AOwner: TCustomCalendarLite);
 begin
   inherited Create;
   FBuffer := TBitmap.Create;
@@ -1396,14 +1516,15 @@ begin
   begin
     if (coShowTodayName in FOwner.Options) then
       s := Format('%s %s', [s, FOwner.GetDayName(TDayOfWeek(DayOfWeek(Date()) - 1))]);
-    AppendStr(s, ' ' + FormatDateTime(FOwner.GetDisplayText(dtTodayFormat), Date(), FOwner.FFormatSettings));
+    // Day name is prefixed above, so always use the short date format here
+    AppendStr(s, ' ' + FormatDateTime(FOwner.GetDateFormat, Date(), FOwner.FFormatSettings));
   end
   else
   begin
     if coShowTodayName in FOwner.Options then
-      ds := FormatDateTime(FOwner.GetDisplayText(dtTodayFormatLong), Date(), FOwner.FFormatSettings)
+      ds := FormatDateTime(FOwner.GetDateFormatLong, Date(), FOwner.FFormatSettings)
     else
-      ds := FormatDateTime(FOwner.GetDisplayText(dtTodayFormat), Date(), FOwner.FFormatSettings);
+      ds := FormatDateTime(FOwner.GetDateFormat, Date(), FOwner.FFormatSettings);
     s := Format(s, [ds]);
   end;
 
@@ -1417,8 +1538,8 @@ begin
   begin
     startDate := FOwner.FSelDates[0];
     endDate := FOwner.FSelDates[FOwner.FSelDates.Count - 1];
-    startText := FormatDateTime(FOwner.GetDisplayText(dtTodayFormat), startDate, FOwner.FFormatSettings);
-    endText := FormatDateTime(FOwner.GetDisplayText(dtTodayFormat), endDate, FOwner.FFormatSettings);
+    startText := FormatDateTime(FOwner.GetDateFormat, startDate, FOwner.FFormatSettings);
+    endText := FormatDateTime(FOwner.GetDateFormat, endDate, FOwner.FFormatSettings);
 
     { Use the current font size and add extra padding to avoid wrapping }
     w4 := Max(FCanvas.TextWidth(startText), FCanvas.TextWidth(endText)) + 8;
@@ -1495,8 +1616,8 @@ var
   savedFontStyle: TFontStyles;
   savedFontColor: TColor;
 begin
-  startText := FormatDateTime(FOwner.GetDisplayText(dtTodayFormat), AStartDate, FOwner.FFormatSettings);
-  endText := FormatDateTime(FOwner.GetDisplayText(dtTodayFormat), AEndDate, FOwner.FFormatSettings);
+  startText := FormatDateTime(FOwner.GetDateFormat, AStartDate, FOwner.FFormatSettings);
+  endText := FormatDateTime(FOwner.GetDateFormat, AEndDate, FOwner.FFormatSettings);
   rangeText := startText + LineEnding + endText;
 
   savedFontStyle := FCanvas.Font.Style;
@@ -1855,7 +1976,7 @@ end;
 
 { TCalColors }
 
-constructor TCalColors.Create(AOwner: TCalendarLite);
+constructor TCalColors.Create(AOwner: TCustomCalendarLite);
 begin
   inherited Create;
   FOwner := AOwner;
@@ -1888,9 +2009,9 @@ begin
   FOwner.Draw;
 end;
 
-{ TCalendarLite }
+{ TCustomCalendarLite }
 
-constructor TCalendarLite.Create(anOwner: TComponent);
+constructor TCustomCalendarLite.Create(anOwner: TComponent);
 begin
   inherited Create(anOwner);
   FFormatSettings := DefaultFormatSettings;
@@ -1936,7 +2057,7 @@ begin
   Date := SysUtils.Date;
 end;
 
-destructor TCalendarLite.Destroy;
+destructor TCustomCalendarLite.Destroy;
 begin
   FreeAndNil(FEvents);
   FreeAndNil(FSelDates);
@@ -1946,13 +2067,13 @@ begin
   inherited Destroy;
 end;
 
-procedure TCalendarLite.AddSelectedDate(ADate: TDate);
+procedure TCustomCalendarLite.AddSelectedDate(ADate: TDate);
 begin
   FSelDates.AddDate(ADate);
   Draw;
 end;
 
-procedure TCalendarLite.ChangeDateTo(ADate: TDate; ASelMode: TCalSelMode);
+procedure TCustomCalendarLite.ChangeDateTo(ADate: TDate; ASelMode: TCalSelMode);
 var
   oldMonth: integer;
   d1: TDate;
@@ -1997,19 +2118,19 @@ begin
     NotifyRangeSelected;
 end;
 
-procedure TCalendarLite.ClearSelectedDates;
+procedure TCustomCalendarLite.ClearSelectedDates;
 begin
   FSelDates.Clear;
   Draw;
 end;
 
-procedure TCalendarLite.DateChange;
+procedure TCustomCalendarLite.DateChange;
 begin
   if Assigned(FOnDateChange) then
     FOnDateChange(Self);
 end;
 
-procedure TCalendarLite.DblClick;
+procedure TCustomCalendarLite.DblClick;
 var
   c: TSize;
   dt: TDate;
@@ -2080,7 +2201,7 @@ begin
 end;
 
 {$ifdef lcl_scaling}
-procedure TCalendarLite.DoAutoAdjustLayout(const AMode: TLayoutAdjustmentPolicy; const AXProportion, AYProportion: double);
+procedure TCustomCalendarLite.DoAutoAdjustLayout(const AMode: TLayoutAdjustmentPolicy; const AXProportion, AYProportion: double);
 begin
   inherited;
   if AMode in [lapAutoAdjustWithoutHorizontalScrolling, lapAutoAdjustForDPI] then
@@ -2094,19 +2215,19 @@ end;
 { Use this method to enforce a repaint of the calendar (instead of the standard
   "Invalidate". This is because it marks the drawing buffer to be invalid
   and enforces repainting of the buffer. }
-procedure TCalendarLite.Draw;
+procedure TCustomCalendarLite.Draw;
 begin
   FBufferValid := False;
   Invalidate;
 end;
 
-procedure TCalendarLite.FontChanged(Sender: TObject);
+procedure TCustomCalendarLite.FontChanged(Sender: TObject);
 begin
   inherited;
   Draw;
 end;
 
-class function TCalendarLite.GetControlClassDefaultSize: TSize;
+class function TCustomCalendarLite.GetControlClassDefaultSize: TSize;
 begin
   {$ifdef lcl_scaling}
   Result.cx := DefCalWidth;
@@ -2117,12 +2238,12 @@ begin
   {$endif}
 end;
 
-function TCalendarLite.GetDayName(ADayOfWeek: TDayOfWeek): string;
+function TCustomCalendarLite.GetDayName(ADayOfWeek: TDayOfWeek): string;
 begin
   Result := FFormatSettings.ShortDayNames[integer(ADayOfWeek) + 1];
 end;
 
-function TCalendarLite.GetDayNames: string;
+function TCustomCalendarLite.GetDayNames: string;
 var
   L: TStrings;
   i: integer;
@@ -2137,12 +2258,12 @@ begin
   end;
 end;
 
-function TCalendarLite.GetDisplayText(aTextIndex: TDisplayText): string;
+function TCustomCalendarLite.GetDisplayText(aTextIndex: TDisplayText): string;
 begin
   Result := FDisplayTexts[aTextIndex];
 end;
 
-function TCalendarLite.GetDisplayTexts: string;
+function TCustomCalendarLite.GetDisplayTexts: string;
 var
   L: TStrings;
   dt: TDisplayText;
@@ -2157,12 +2278,42 @@ begin
   end;
 end;
 
-function TCalendarLite.GetMonthName(AMonth: integer): string;
+function TCustomCalendarLite.GetMonthName(AMonth: integer): string;
 begin
   Result := FFormatSettings.LongMonthNames[AMonth];
 end;
 
-function TCalendarLite.GetMonthNames: string;
+function TCustomCalendarLite.GetDateFormat: string;
+begin
+  // User override wins over the localized short format
+  if FDateFormat <> '' then
+    Result := FDateFormat
+  else
+    Result := FDisplayTexts[dtTodayFormat];
+end;
+
+function TCustomCalendarLite.GetDateFormatLong: string;
+begin
+  // User override wins over the localized long format
+  if FDateFormat <> '' then
+    Result := FDateFormat
+  else
+    Result := FDisplayTexts[dtTodayFormatLong];
+end;
+
+function TCustomCalendarLite.GetEventDateFormat(ADateTime: TDateTime): string;
+begin
+  if Trunc(ADateTime) = ADateTime then
+    // No time set - fall back to the regular date format
+    Result := GetDateFormat
+  else if FEventDateFormat <> '' then
+    Result := FEventDateFormat
+  else
+    // Default: regular date format plus time
+    Result := GetDateFormat + ' hh:nn';
+end;
+
+function TCustomCalendarLite.GetMonthNames: string;
 var
   L: TStrings;
   i: integer;
@@ -2177,12 +2328,26 @@ begin
   end;
 end;
 
-procedure TCalendarLite.HolidayMenuItemClicked(Sender: TObject);
+procedure TCustomCalendarLite.SetDateFormat(const AValue: string);
+begin
+  if FDateFormat = AValue then exit;
+  FDateFormat := AValue;
+  Draw;
+end;
+
+procedure TCustomCalendarLite.SetEventDateFormat(const AValue: string);
+begin
+  if FEventDateFormat = AValue then exit;
+  FEventDateFormat := AValue;
+  Draw;
+end;
+
+procedure TCustomCalendarLite.HolidayMenuItemClicked(Sender: TObject);
 begin
   FCalDrawer.GotoDay(TMenuItem(Sender).Tag);
 end;
 
-procedure TCalendarLite.InternalClick;
+procedure TCustomCalendarLite.InternalClick;
 begin
   case FClickButton of
     mbLeft: FCalDrawer.LeftClick(FClickPoint, FClickShift);
@@ -2191,22 +2356,22 @@ begin
   Draw;
 end;
 
-function TCalendarLite.IsSelected(ADate: TDate): boolean;
+function TCustomCalendarLite.IsSelected(ADate: TDate): boolean;
 begin
   Result := IsSingleSelected(ADate) or IsInRange(ADate);
 end;
 
-function TCalendarLite.IsSingleSelected(ADate: TDate): boolean;
+function TCustomCalendarLite.IsSingleSelected(ADate: TDate): boolean;
 begin
   Result := (FSelectedDate <> 0) and (Trunc(ADate) = Trunc(FSelectedDate));
 end;
 
-function TCalendarLite.IsInRange(ADate: TDate): boolean;
+function TCustomCalendarLite.IsInRange(ADate: TDate): boolean;
 begin
   Result := FSelDates.IndexOfDate(ADate) > -1;
 end;
 
-procedure TCalendarLite.KeyDown(var Key: word; Shift: TShiftState);
+procedure TCustomCalendarLite.KeyDown(var Key: word; Shift: TShiftState);
 var
   sm: TCalSelMode;
   baseDate: TDate;
@@ -2272,7 +2437,7 @@ begin
   inherited;
 end;
 
-procedure TCalendarLite.KeyUp(var Key: word; Shift: TShiftState);
+procedure TCustomCalendarLite.KeyUp(var Key: word; Shift: TShiftState);
 begin
   inherited KeyUp(Key, Shift);
   // Release of shift ends the current shift-anchored range
@@ -2280,13 +2445,13 @@ begin
     FShiftAnchor := 0;
 end;
 
-procedure TCalendarLite.MonthChange;
+procedure TCustomCalendarLite.MonthChange;
 begin
   if Assigned(FOnMonthChange) then
     FOnMonthChange(Self);
 end;
 
-procedure TCalendarLite.MouseDown(Button: TMouseButton; Shift: TShiftState; X, Y: integer);
+procedure TCustomCalendarLite.MouseDown(Button: TMouseButton; Shift: TShiftState; X, Y: integer);
 var
   ev: TCalEventItem;
   dt: TDate;
@@ -2382,12 +2547,12 @@ begin
   InternalClick;
 end;
 
-procedure TCalendarLite.MouseEnter;
+procedure TCustomCalendarLite.MouseEnter;
 begin
   FSavedHint := Hint;
 end;
 
-procedure TCalendarLite.MouseLeave;
+procedure TCustomCalendarLite.MouseLeave;
 begin
   HideHintWindow;
   FPrevMouseDate := 0;
@@ -2396,7 +2561,7 @@ begin
     FCalDrawer.HoveredEvent := nil;
 end;
 
-procedure TCalendarLite.MouseMove(Shift: TShiftState; X, Y: integer);
+procedure TCustomCalendarLite.MouseMove(Shift: TShiftState; X, Y: integer);
 var
   c: TSize;
   dt: TDate;
@@ -2530,7 +2695,7 @@ begin
   end;
 end;
 
-procedure TCalendarLite.MouseUp(Button: TMouseButton; Shift: TShiftState; X, Y: integer);
+procedure TCustomCalendarLite.MouseUp(Button: TMouseButton; Shift: TShiftState; X, Y: integer);
 var
   c: TSize;
   dt: TDate;
@@ -2630,7 +2795,7 @@ begin
   FLastScrollY := 0;
 end;
 
-function TCalendarLite.WheelThrottleAllows: boolean;
+function TCustomCalendarLite.WheelThrottleAllows: boolean;
 var
   NowTick: QWord;
 begin
@@ -2641,7 +2806,7 @@ begin
     FLastWheelTick := NowTick;
 end;
 
-function TCalendarLite.DoMouseWheelDown(Shift: TShiftState; MousePos: TPoint): boolean;
+function TCustomCalendarLite.DoMouseWheelDown(Shift: TShiftState; MousePos: TPoint): boolean;
 var
   c: TSize;
   dt: TDate;
@@ -2674,7 +2839,7 @@ begin
   end;
 end;
 
-function TCalendarLite.DoMouseWheelUp(Shift: TShiftState; MousePos: TPoint): boolean;
+function TCustomCalendarLite.DoMouseWheelUp(Shift: TShiftState; MousePos: TPoint): boolean;
 var
   c: TSize;
   dt: TDate;
@@ -2707,12 +2872,12 @@ begin
   end;
 end;
 
-procedure TCalendarLite.MonthMenuItemClicked(Sender: TObject);
+procedure TCustomCalendarLite.MonthMenuItemClicked(Sender: TObject);
 begin
   FCalDrawer.GotoMonth(TMenuItem(Sender).Tag);
 end;
 
-procedure TCalendarLite.Paint;
+procedure TCustomCalendarLite.Paint;
 begin
   if Assigned(FCalDrawer) then
   begin
@@ -2727,14 +2892,14 @@ begin
   inherited Paint;
 end;
 
-procedure TCalendarLite.Resize;
+procedure TCustomCalendarLite.Resize;
 begin
   FBufferValid := False;
   FCalDrawer.BoundsRect := ClientRect;
   inherited;
 end;
 
-procedure TCalendarLite.PopulateHolidayPopupMenu;
+procedure TCustomCalendarLite.PopulateHolidayPopupMenu;
 var
   item: TMenuItem;
   m, d, dayCount: integer;
@@ -2790,7 +2955,7 @@ begin
   end;
 end;
 
-procedure TCalendarLite.PopulateMonthPopupMenu;
+procedure TCustomCalendarLite.PopulateMonthPopupMenu;
 var
   m: integer;
   item: TMenuItem;
@@ -2811,7 +2976,7 @@ begin
   end;
 end;
 
-procedure TCalendarLite.PopulateYearPopupMenu;
+procedure TCustomCalendarLite.PopulateYearPopupMenu;
 var
   y: integer;
   item: TMenuItem;
@@ -2832,12 +2997,12 @@ begin
   end;
 end;
 
-function TCalendarLite.SelectedDates: TCalDateArray;
+function TCustomCalendarLite.SelectedDates: TCalDateArray;
 begin
   Result := FSelDates.AsArray;
 end;
 
-function TCalendarLite.SelectionRange(out AStart, AEnd: TDate): boolean;
+function TCustomCalendarLite.SelectionRange(out AStart, AEnd: TDate): boolean;
 begin
   Result := (FSelDates.Count > 1);
   if not Result then
@@ -2858,42 +3023,42 @@ begin
   AEnd := FSelDates[FSelDates.Count - 1];
 end;
 
-procedure TCalendarLite.SetButtonHeight(const AValue: integer);
+procedure TCustomCalendarLite.SetButtonHeight(const AValue: integer);
 begin
   if FButtonHeight = AValue then exit;
   FButtonHeight := AValue;
   Draw;
 end;
 
-procedure TCalendarLite.SetButtonWidth(const AValue: integer);
+procedure TCustomCalendarLite.SetButtonWidth(const AValue: integer);
 begin
   if FButtonWidth = AValue then exit;
   FButtonWidth := AValue;
   Draw;
 end;
 
-procedure TCalendarLite.SetCustomDayNames(const AValue: string);
+procedure TCustomCalendarLite.SetCustomDayNames(const AValue: string);
 begin
   FCustomDayNames := AValue;
   if FLanguage = lgCustom then
     SetLanguage(lgCustom);
 end;
 
-procedure TCalendarLite.SetCustomDisplayTexts(const AValue: string);
+procedure TCustomCalendarLite.SetCustomDisplayTexts(const AValue: string);
 begin
   FCustomDisplayTexts := AValue;
   if FLanguage = lgCustom then
     SetLanguage(lgCustom);
 end;
 
-procedure TCalendarLite.SetCustomMonthNames(const AValue: string);
+procedure TCustomCalendarLite.SetCustomMonthNames(const AValue: string);
 begin
   FCustomMonthNames := AValue;
   if FLanguage = lgCustom then
     SetLanguage(lgCustom);
 end;
 
-procedure TCalendarLite.SetDate(AValue: TDateTime);
+procedure TCustomCalendarLite.SetDate(AValue: TDateTime);
 var
   oldMonth: integer;
   dateValue: integer;
@@ -2914,7 +3079,7 @@ begin
   Draw;
 end;
 
-procedure TCalendarLite.SetDefaultDayNames;
+procedure TCustomCalendarLite.SetDefaultDayNames;
 begin
   UseDayName(dowSunday, rsCalSunday);
   UseDayName(dowMonday, rsCalMonday);
@@ -2925,7 +3090,7 @@ begin
   UseDayName(dowSaturday, rsCalSaturday);
 end;
 
-procedure TCalendarLite.SetDefaultDisplayTexts;
+procedure TCustomCalendarLite.SetDefaultDisplayTexts;
 begin
   FDisplayTexts[dtToday] := rsCalTodayIs;
   FDisplayTexts[dtHolidaysDuring] := rsCalHolidaysIn;
@@ -2938,7 +3103,7 @@ begin
   FCustomDisplayTexts := GetDisplayTexts;
 end;
 
-procedure TCalendarLite.SetDefaultMonthNames;
+procedure TCustomCalendarLite.SetDefaultMonthNames;
 begin
   UseMonthName(1, rsCalJanuary);
   UseMonthname(2, rsCalFebruary);
@@ -2954,7 +3119,7 @@ begin
   UseMonthName(12, rsCalDecember);
 end;
 
-procedure TCalendarLite.SetDisplayTexts(AValue: string);
+procedure TCustomCalendarLite.SetDisplayTexts(AValue: string);
 var
   L: TStrings;
   i: integer;
@@ -2975,21 +3140,21 @@ begin
   Draw;
 end;
 
-procedure TCalendarLite.SetEventSquareSize(const AValue: integer);
+procedure TCustomCalendarLite.SetEventSquareSize(const AValue: integer);
 begin
   if FEventSquareSize = AValue then exit;
   FEventSquareSize := AValue;
   Draw;
 end;
 
-procedure TCalendarLite.SetEventSquareBottom(const AValue: integer);
+procedure TCustomCalendarLite.SetEventSquareBottom(const AValue: integer);
 begin
   if FEventSquareBottom = AValue then exit;
   FEventSquareBottom := AValue;
   Draw;
 end;
 
-procedure TCalendarLite.SetLanguage(AValue: TLanguage);
+procedure TCustomCalendarLite.SetLanguage(AValue: TLanguage);
 begin
   // Don't check for "FLanguage = AValue" because otherwise the code would not
   // execute after being called from the constructor.
@@ -3066,7 +3231,7 @@ begin
   Draw;
 end;
 
-function TCalendarLite.SelMode(Shift: TShiftState): TCalSelMode;
+function TCustomCalendarLite.SelMode(Shift: TShiftState): TCalSelMode;
 begin
   if FMultiSelect and (ssShift in Shift) then
     Result := smExtendRange
@@ -3074,13 +3239,13 @@ begin
     Result := smToggleSingle;
 end;
 
-procedure TCalendarLite.SetBiDiMode(AValue: TBiDiMode);
+procedure TCustomCalendarLite.SetBiDiMode(AValue: TBiDiMode);
 begin
   inherited;
   UpdateBiDiMode;
 end;
 
-procedure TCalendarLite.SetMultiSelect(AValue: boolean);
+procedure TCustomCalendarLite.SetMultiSelect(AValue: boolean);
 begin
   if AValue = FMultiSelect then
     exit;
@@ -3089,20 +3254,20 @@ begin
   FSelDates.Clear;
 end;
 
-procedure TCalendarLite.SetParentBiDiMode(AValue: boolean);
+procedure TCustomCalendarLite.SetParentBiDiMode(AValue: boolean);
 begin
   inherited;
   UpdateBiDiMode;
 end;
 
-procedure TCalendarLite.SetStartingDayOfWeek(AValue: TDayOfWeek);
+procedure TCustomCalendarLite.SetStartingDayOfWeek(AValue: TDayOfWeek);
 begin
   if FStartingDayOfWeek = AValue then Exit;
   FStartingDayOfWeek := AValue;
   Draw;
 end;
 
-procedure TCalendarLite.SetOptions(AValue: TCalOptions);
+procedure TCustomCalendarLite.SetOptions(AValue: TCalOptions);
 begin
   //if FOptions = AValue then Exit;
   FOptions := AValue;
@@ -3115,14 +3280,14 @@ begin
   Draw;
 end;
 
-procedure TCalendarLite.SetWeekendDays(AValue: TDaysOfWeek);
+procedure TCustomCalendarLite.SetWeekendDays(AValue: TDaysOfWeek);
 begin
   if FWeekendDays = AValue then Exit;
   FWeekendDays := AValue;
   Draw;
 end;
 
-procedure TCalendarLite.AutoScrollTo(ADelta: integer);
+procedure TCustomCalendarLite.AutoScrollTo(ADelta: integer);
 begin
   FDragging := True;
   FLastDragDate := 0;
@@ -3133,7 +3298,7 @@ begin
   Draw;
 end;
 
-procedure TCalendarLite.FillSelectedRange(AStart, AEnd: TDate);
+procedure TCustomCalendarLite.FillSelectedRange(AStart, AEnd: TDate);
 var
   d: TDate;
   d1: TDate;
@@ -3163,7 +3328,7 @@ begin
   end;
 end;
 
-procedure TCalendarLite.NavigateView(ADate: TDate);
+procedure TCustomCalendarLite.NavigateView(ADate: TDate);
 begin
   FNavigatingView := True;
   try
@@ -3173,7 +3338,7 @@ begin
   end;
 end;
 
-procedure TCalendarLite.NotifyRangeSelected;
+procedure TCustomCalendarLite.NotifyRangeSelected;
 var
   i: integer = 0;
   d: TDate = 0;
@@ -3207,13 +3372,13 @@ end;
   prevent the Click method in addition to the DblClick method. In case of
   a single click the TimerExpired event is reached. In case of a double-click
   the click handled directly by the DblClick }
-procedure TCalendarLite.TimerExpired(Sender: TObject);
+procedure TCustomCalendarLite.TimerExpired(Sender: TObject);
 begin
   FDblClickTimer.Enabled := False;
   InternalClick;
 end;
 
-procedure TCalendarLite.UpdateBiDiMode;
+procedure TCustomCalendarLite.UpdateBiDiMode;
 begin
   case (BiDiMode = bdLeftToRight) of
     False: if not FCalDrawer.FTextStyle.RightToLeft then
@@ -3223,7 +3388,7 @@ begin
   end;
 end;
 
-procedure TCalendarlite.UseDayName(ADayOfWeek: TDayOfWeek; const AValue: string);
+procedure TCustomCalendarLite.UseDayName(ADayOfWeek: TDayOfWeek; const AValue: string);
 var
   p: integer;
   d: integer;
@@ -3243,7 +3408,7 @@ begin
   end;
 end;
 
-procedure TCalendarLite.UseDayNames(const AValue: string);
+procedure TCustomCalendarLite.UseDayNames(const AValue: string);
 var
   L: TStrings;
   i, dow: integer;
@@ -3262,12 +3427,12 @@ begin
   end;
 end;
 
-procedure TCalendarLite.UseDisplayTexts(const AValue: string);
+procedure TCustomCalendarLite.UseDisplayTexts(const AValue: string);
 begin
   SetDisplayTexts(AValue);
 end;
 
-procedure TCalendarLite.UseMonthName(AMonth: integer; const AValue: string);
+procedure TCustomCalendarLite.UseMonthName(AMonth: integer; const AValue: string);
 var
   p: integer;
 begin
@@ -3286,7 +3451,7 @@ begin
   end;
 end;
 
-procedure TCalendarLite.UseMonthNames(const AValue: string);
+procedure TCustomCalendarLite.UseMonthNames(const AValue: string);
 var
   L: TStrings;
   i, m: integer;
@@ -3305,16 +3470,17 @@ begin
   end;
 end;
 
-procedure TCalendarLite.YearMenuItemClicked(Sender: TObject);
+procedure TCustomCalendarLite.YearMenuItemClicked(Sender: TObject);
 begin
   FCalDrawer.GotoYear(TMenuItem(Sender).Tag);
 end;
 
 { Hints }
 
-procedure TCalendarLite.ShowHintWindow(APoint: TPoint; ADate: TDate);
+procedure TCustomCalendarLite.ShowHintWindow(APoint: TPoint; ADate: TDate);
 var
   txt: string = '';
+  dateTxt: string;
   y, m, d: word;
 begin
   if Assigned(FOnHint) then
@@ -3331,8 +3497,12 @@ begin
   else
     txt := Hint;
 
+  // Prepend the formatted date using DateFormat
+  dateTxt := FormatDateTime(GetDateFormat, ADate, FFormatSettings);
   if txt = '' then
-    exit;
+    txt := dateTxt
+  else
+    txt := dateTxt + LineEnding + txt;
 
   APoint := ClientToScreen(APoint);
   Hint := txt;
@@ -3341,15 +3511,21 @@ begin
 end;
 
 { Show a hint with the event caption }
-procedure TCalendarLite.ShowEventHintWindow(APoint: TPoint; AEvent: TCalEventItem);
+procedure TCustomCalendarLite.ShowEventHintWindow(APoint: TPoint; AEvent: TCalEventItem);
 var
   txt: string;
+  dateTxt: string;
 begin
   if not Assigned(AEvent) then exit;
-  txt := AEvent.Name;
-  if txt = '' then exit;
 
-  { Force ShowHint to bypass LCL checks for ActivateHint }
+  // Build the date (plus time if set) prefix using EventDateFormat
+  dateTxt := FormatDateTime(GetEventDateFormat(AEvent.Date), AEvent.Date, FFormatSettings);
+
+  if AEvent.Name <> '' then
+    txt := dateTxt + LineEnding + AEvent.Name
+  else
+    txt := dateTxt;
+
   if not ShowHint then
     ShowHint := True;
 
@@ -3359,7 +3535,7 @@ begin
   Application.ActivateHint(APoint);
 end;
 
-procedure TCalendarLite.HideHintWindow;
+procedure TCustomCalendarLite.HideHintWindow;
 begin
   Hint := FSavedHint;
   Application.CancelHint;
