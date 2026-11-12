@@ -1,0 +1,166 @@
+object FormAbout: TFormAbout
+  Left = 318
+  Height = 470
+  Top = 200
+  Width = 580
+  BorderIcons = [biSystemMenu]
+  ClientHeight = 470
+  ClientWidth = 580
+  Color = clWhite
+  Constraints.MinHeight = 470
+  Constraints.MinWidth = 580
+  Position = poDesktopCenter
+  LCLVersion = '4.8.0.0'
+  Scaled = False
+  OnCreate = FormCreate
+  OnDestroy = FormDestroy
+  object panelHeader: TPanel
+    Left = 0
+    Height = 138
+    Top = 0
+    Width = 580
+    Align = alTop
+    BevelOuter = bvNone
+    ClientHeight = 138
+    ClientWidth = 580
+    Color = 15794175
+    ParentBackground = False
+    ParentColor = False
+    TabOrder = 0
+    object imageLogo: TImage
+      Left = 24
+      Height = 96
+      Top = 24
+      Width = 96
+      Proportional = True
+      Stretch = True
+    end
+    object labelName: TLabel
+      Left = 151
+      Height = 1
+      Top = 24
+      Width = 1
+      Font.Height = -33
+      Font.Style = [fsBold]
+      ParentFont = False
+    end
+    object labelVersion: TLabel
+      Left = 152
+      Height = 1
+      Top = 80
+      Width = 1
+      Font.CharSet = RUSSIAN_CHARSET
+      Font.Color = clGray
+      Font.Height = -19
+      Font.Pitch = fpVariable
+      Font.Quality = fqDraft
+      ParentFont = False
+    end
+  end
+  object panelFooter: TPanel
+    Left = 0
+    Height = 44
+    Top = 426
+    Width = 580
+    Align = alBottom
+    BevelOuter = bvNone
+    ClientHeight = 44
+    ClientWidth = 580
+    Color = clWhite
+    ParentBackground = False
+    ParentColor = False
+    TabOrder = 1
+    object buttonOk: TButton
+      Left = 468
+      Height = 23
+      Top = 8
+      Width = 88
+      Anchors = [akTop, akRight]
+      Cancel = True
+      Default = True
+      ModalResult = 1
+      TabOrder = 0
+    end
+  end
+  object panelBody: TPanel
+    Left = 0
+    Height = 288
+    Top = 138
+    Width = 580
+    Align = alClient
+    BevelOuter = bvNone
+    ClientHeight = 288
+    ClientWidth = 580
+    Color = clWhite
+    ParentBackground = False
+    ParentColor = False
+    TabOrder = 2
+    object labelBy: TLabel
+      Left = 24
+      Height = 1
+      Top = 18
+      Width = 1
+      Font.Height = -12
+      ParentFont = False
+    end
+    object labelBy1: TLabel
+      Left = 24
+      Height = 1
+      Top = 40
+      Width = 1
+      Font.Height = -12
+      Font.Style = [fsBold]
+      ParentFont = False
+    end
+    object labelLic: TLabel
+      Left = 24
+      Height = 1
+      Top = 72
+      Width = 1
+      Font.Height = -12
+      ParentFont = False
+    end
+    object LabelUrlEmail: TLabel
+      Cursor = crHandPoint
+      Left = 24
+      Height = 1
+      Top = 96
+      Width = 1
+      Font.Color = clBlue
+      Font.Height = -12
+      Font.Style = [fsUnderline]
+      ParentFont = False
+      ParentShowHint = False
+      ShowHint = True
+      OnClick = LabelUrlEmailClick
+    end
+    object LabelUrlGithub: TLabel
+      Cursor = crHandPoint
+      Left = 24
+      Height = 1
+      Top = 122
+      Width = 1
+      Font.Color = clBlue
+      Font.Height = -12
+      Font.Style = [fsUnderline]
+      ParentFont = False
+      ParentShowHint = False
+      ShowHint = True
+      OnClick = LabelUrlEmailClick
+    end
+    object MemoAbout: TMemo
+      Left = 24
+      Height = 126
+      Top = 160
+      Width = 532
+      Anchors = [akTop, akLeft, akRight, akBottom]
+      BorderStyle = bsNone
+      Color = clWhite
+      Font.Height = -12
+      ParentFont = False
+      ReadOnly = True
+      ScrollBars = ssVertical
+      TabOrder = 0
+    end
+  end
+end

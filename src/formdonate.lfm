@@ -1,0 +1,92 @@
+object FormDonate: TFormDonate
+  Left = 318
+  Height = 298
+  Top = 250
+  Width = 447
+  BorderIcons = [biSystemMenu]
+  BorderStyle = bsDialog
+  ClientHeight = 298
+  ClientWidth = 447
+  Color = clWindow
+  Position = poDesktopCenter
+  LCLVersion = '4.8.0.0'
+  OnCreate = FormCreate
+  OnDestroy = FormDestroy
+  object BtnOk: TButton
+    Left = 362
+    Height = 25
+    Top = 261
+    Width = 75
+    Anchors = [akRight, akBottom]
+    ModalResult = 1
+    TabOrder = 0
+  end
+  object LabelDonate: TLabel
+    Left = 16
+    Height = 84
+    Top = 8
+    Width = 415
+    AutoSize = False
+    WordWrap = True
+  end
+  object LabelSupport: TLabel
+    Left = 16
+    Height = 40
+    Top = 92
+    Width = 415
+    AutoSize = False
+    WordWrap = True
+  end
+  object labelBank: TLabel
+    Cursor = crHandPoint
+    Left = 56
+    Height = 1
+    Top = 136
+    Width = 1
+    Font.Color = clBlue
+    Font.Style = [fsUnderline]
+    ParentFont = False
+    ParentShowHint = False
+    ShowAccelChar = False
+    ShowHint = True
+    WordWrap = True
+    OnClick = labelBankClick
+  end
+  object labelCrypto: TLabel
+    Cursor = crHandPoint
+    Left = 56
+    Height = 1
+    Top = 168
+    Width = 1
+    Font.Color = clBlue
+    Font.Style = [fsUnderline]
+    ParentFont = False
+    ParentShowHint = False
+    ShowAccelChar = False
+    ShowHint = True
+    WordWrap = True
+    OnClick = labelBankClick
+  end
+  object ImageBank: TImage
+    Left = 16
+    Height = 17
+    Top = 136
+    Width = 24
+    AutoSize = True
+  end
+  object ImageCrypto: TImage
+    Left = 16
+    Height = 24
+    Top = 168
+    Width = 24
+    AutoSize = True
+  end
+  object LabelContribution: TLabel
+    Left = 16
+    Height = 48
+    Top = 208
+    Width = 415
+    AutoSize = False
+    WordWrap = True
+  end
+end
