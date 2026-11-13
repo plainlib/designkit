@@ -18,6 +18,8 @@ object FormDonate: TFormDonate
     Top = 261
     Width = 75
     Anchors = [akRight, akBottom]
+    Cancel = True
+    Default = True
     ModalResult = 1
     TabOrder = 0
   end

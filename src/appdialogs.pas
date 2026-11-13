@@ -427,9 +427,15 @@ begin
     end;
 
     if FAboutDialog.Width > 0 then
+    begin
+      Dlg.Constraints.MinWidth := FAboutDialog.Width;
       Dlg.Width := FAboutDialog.Width;
+    end;
     if FAboutDialog.Height > 0 then
+    begin
+      Dlg.Constraints.MinHeight := FAboutDialog.Height;
       Dlg.Height := FAboutDialog.Height;
+    end;
 
     Dlg.ApplySettings;
     Dlg.ShowModal;
@@ -471,9 +477,15 @@ begin
       Dlg.CryptoPicture.Assign(FDonateDialog.CryptoIcon);
 
     if FDonateDialog.Width > 0 then
+    begin
+      Dlg.Constraints.MinWidth := FDonateDialog.Width;
       Dlg.Width := FDonateDialog.Width;
+    end;
     if FDonateDialog.Height > 0 then
+    begin
+      Dlg.Constraints.MinHeight := FDonateDialog.Height;
       Dlg.Height := FDonateDialog.Height;
+    end;
 
     Dlg.ApplySettings;
     Dlg.ShowModal;
